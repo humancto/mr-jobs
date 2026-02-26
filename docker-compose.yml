@@ -1,0 +1,13 @@
+services:
+  mrjobs:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./profile.yaml:/app/profile.yaml
+      - ./resumes:/app/resumes
+      - ./applications.db:/app/applications.db
+      - ./.cache:/app/.cache
+    environment:
+      - CLAUDE_AUTH_TOKEN=${CLAUDE_AUTH_TOKEN}
+    restart: unless-stopped

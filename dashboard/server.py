@@ -1,5 +1,5 @@
 """
-Auto-Apply Dashboard — FastAPI server with REST API and WebSocket support.
+MR.Jobs Dashboard — FastAPI server with REST API and WebSocket support.
 Serves a local web dashboard at http://localhost:8080.
 
 Architecture notes:
@@ -36,6 +36,10 @@ from utils.tracker import (
     log_skipped,
     get_unscored_jobs,
     VALID_STATUSES,
+    ignore_jobs,
+    purge_all,
+    purge_everything,
+    get_ignored_count,
 )
 from utils.events import EventBus
 
@@ -62,7 +66,14 @@ async def lifespan(app):
     except Exception:
         pass
 
-app = FastAPI(title="Auto-Apply Dashboard", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="MR.Jobs", version="1.0.0", lifespan=lifespan)
+
+
+@app.get("/api/health")
+async def health() -> dict:
+    """Health check for Docker and monitoring."""
+    return {"status": "ok", "profile": Path("profile.yaml").exists()}
+
 
 # ---------------------------------------------------------------------------
 # Static files and Jinja2 templates
@@ -217,6 +228,42 @@ async def remove_job(job_id: str) -> dict:
 
 
 # ===========================================================================
+# REST API — Ignore & Purge
+# ===========================================================================
+
+@app.post("/api/jobs/ignore")
+async def ignore_selected(body: dict) -> dict:
+    """Mark selected jobs as ignored. They won't reappear on future discovery runs.
+    Body: {"job_ids": ["id1", "id2", ...]}
+    """
+    job_ids = body.get("job_ids", [])
+    if not job_ids:
+        raise HTTPException(status_code=400, detail="No job_ids provided")
+    count = ignore_jobs(job_ids)
+    return {"ok": True, "ignored": count}
+
+
+@app.post("/api/purge")
+async def purge(body: dict = {}) -> dict:
+    """Nuke discovery data.
+    Body: {"keep_ignore_list": true} — preserves ignore list (default).
+          {"keep_ignore_list": false} — full factory reset.
+    """
+    keep = body.get("keep_ignore_list", True)
+    if keep:
+        result = purge_all()
+    else:
+        result = purge_everything()
+    return {"ok": True, **result}
+
+
+@app.get("/api/ignored/count")
+async def ignored_count() -> dict:
+    """Return the number of ignored job hashes."""
+    return {"count": get_ignored_count()}
+
+
+# ===========================================================================
 # REST API — Stats and metadata
 # ===========================================================================
 
@@ -251,16 +298,92 @@ async def statuses() -> list:
 
 
 # ===========================================================================
+# REST API — Follow-ups & Ghost Detection
+# ===========================================================================
+
+@app.get("/api/follow-ups")
+async def get_follow_ups() -> dict:
+    """Get overdue follow-ups and ghost alerts."""
+    from utils.tracker import get_overdue_follow_ups, get_ghost_alerts
+    return {
+        "overdue": get_overdue_follow_ups(),
+        "ghosts": get_ghost_alerts(days=14),
+    }
+
+
+@app.post("/api/jobs/{job_id}/follow-up")
+async def mark_follow_up(job_id: str, body: dict = {}) -> dict:
+    """Mark follow-up done and reschedule."""
+    from utils.tracker import increment_follow_up
+    job = get_job_by_id(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    days = body.get("next_days", 7)
+    increment_follow_up(job_id, days=days)
+    return {"ok": True, "job_id": job_id, "next_days": days}
+
+
+@app.post("/api/jobs/{job_id}/dismiss-follow-up")
+async def dismiss_follow_up_endpoint(job_id: str) -> dict:
+    """Clear follow-up reminder for a job."""
+    from utils.tracker import dismiss_follow_up
+    job = get_job_by_id(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    dismiss_follow_up(job_id)
+    return {"ok": True, "job_id": job_id}
+
+
+# ===========================================================================
 # REST API — Profile
 # ===========================================================================
 
 @app.get("/api/profile")
 async def get_profile() -> dict:
-    """Return the current profile.yaml as JSON."""
+    """Return the current profile.yaml as JSON, or signal setup needed."""
     import yaml
     profile_path = BASE_DIR.parent / "profile.yaml"
+    if not profile_path.exists():
+        return {"needs_setup": True}
     with open(profile_path) as f:
         return yaml.safe_load(f)
+
+
+@app.post("/api/setup")
+async def run_setup(body: dict) -> dict:
+    """First-run wizard: create profile.yaml from wizard data."""
+    import yaml
+    profile_path = BASE_DIR.parent / "profile.yaml"
+    example_path = BASE_DIR.parent / "profile.yaml.example"
+
+    # Load defaults from example
+    defaults = {}
+    if example_path.exists():
+        with open(example_path) as f:
+            defaults = yaml.safe_load(f) or {}
+
+    # Deep merge wizard data over defaults
+    def deep_merge(base, updates):
+        for key, value in updates.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                deep_merge(base[key], value)
+            else:
+                base[key] = value
+
+    deep_merge(defaults, body)
+
+    with open(profile_path, "w") as f:
+        yaml.dump(defaults, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    # Try to start scheduler now that profile exists
+    try:
+        from scheduler import setup_scheduler, start_scheduler
+        setup_scheduler()
+        start_scheduler()
+    except Exception:
+        pass
+
+    return defaults
 
 
 @app.patch("/api/profile")
@@ -283,7 +406,54 @@ async def update_profile(body: dict) -> dict:
     with open(profile_path, "w") as f:
         yaml.dump(profile, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
+    # Clear LLM backend cache so new ai config takes effect
+    try:
+        from utils.llm import clear_backend_cache
+        clear_backend_cache()
+    except ImportError:
+        pass
+
     return profile
+
+
+@app.post("/api/profile/score")
+async def score_profile_endpoint() -> dict:
+    """
+    AI-powered profile and resume analysis.
+    Reads profile.yaml + resume PDF, sends to Claude for scoring.
+    Returns strengths, gaps, resume suggestions, role fit rankings.
+    """
+    import yaml
+
+    profile_path = BASE_DIR.parent / "profile.yaml"
+    with open(profile_path) as f:
+        profile = yaml.safe_load(f)
+
+    async def _do_score():
+        try:
+            from utils.brain import ClaudeBrain
+            from utils.resume_parser import extract_resume_text
+
+            await broadcast_event({"type": "profile_score_started", "data": {}})
+
+            brain = ClaudeBrain(verbose=False, profile=profile)
+            resume_path = profile.get("resume_path", "")
+            resume_text = extract_resume_text(resume_path) if resume_path else ""
+
+            result = brain.score_profile(profile, resume_text)
+
+            await broadcast_event({
+                "type": "profile_score_complete",
+                "data": result,
+            })
+        except Exception as exc:
+            await broadcast_event({
+                "type": "profile_score_error",
+                "data": {"error": str(exc)},
+            })
+
+    asyncio.create_task(_do_score())
+    return {"status": "started"}
 
 
 # ===========================================================================
@@ -462,12 +632,14 @@ async def rescore_job(job_id: str) -> dict:
             with open(profile_path) as f:
                 profile = yaml.safe_load(f)
 
-            brain = ClaudeBrain(verbose=False)
+            brain = ClaudeBrain(verbose=False, profile=profile)
+            from utils.resume_parser import extract_resume_text
+            resume_text = extract_resume_text(profile.get("resume_path", ""))
             desc = (
                 job.get("description", "")
                 or f"Job: {job['title']} at {job['company']}. Location: {job['location']}"
             )
-            result = brain.match_job(desc, profile)
+            result = brain.match_job(desc, profile, resume_text=resume_text)
             score: int = result.get("score", 0)
             reasoning: str = result.get("reasoning", "")
             cover_letter: str = result.get("cover_letter", "")
@@ -493,6 +665,58 @@ async def rescore_job(job_id: str) -> dict:
     return {"status": "started"}
 
 
+@app.post("/api/jobs/{job_id}/tailor")
+async def tailor_job(job_id: str) -> dict:
+    """Generate tailored resume content for a specific job."""
+    from utils.tracker import get_tailored_resume, update_tailored_resume
+
+    job = get_job_by_id(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def _do_tailor():
+        try:
+            import yaml
+            from utils.resume_tailor import tailor_resume
+            from utils.resume_parser import extract_resume_text
+            from utils.brain import ClaudeBrain
+
+            profile_path = BASE_DIR.parent / "profile.yaml"
+            with open(profile_path) as f:
+                profile = yaml.safe_load(f)
+
+            resume_text = extract_resume_text(profile.get("resume_path", ""))
+            desc = job.get("description", "") or f"Job: {job['title']} at {job['company']}"
+
+            brain = ClaudeBrain(verbose=False, profile=profile)
+            result = tailor_resume(desc, resume_text, profile, brain=brain)
+
+            update_tailored_resume(job_id, result)
+
+            await broadcast_event({
+                "type": "tailor_complete",
+                "data": {"id": job_id, "has_content": bool(result.get("tailored_summary"))}
+            })
+        except Exception as exc:
+            await broadcast_event({
+                "type": "tailor_error",
+                "data": {"id": job_id, "error": str(exc)}
+            })
+
+    asyncio.create_task(_do_tailor())
+    return {"status": "started", "job_id": job_id}
+
+
+@app.get("/api/jobs/{job_id}/tailor")
+async def get_tailor(job_id: str) -> dict:
+    """Get tailored resume content for a job."""
+    from utils.tracker import get_tailored_resume
+    job = get_job_by_id(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return get_tailored_resume(job_id)
+
+
 @app.post("/api/score-all")
 async def score_all_unscored() -> dict:
     """
@@ -512,7 +736,9 @@ async def score_all_unscored() -> dict:
             with open(profile_path) as f:
                 profile = yaml.safe_load(f)
 
-            brain = ClaudeBrain(verbose=False)
+            brain = ClaudeBrain(verbose=False, profile=profile)
+            from utils.resume_parser import extract_resume_text
+            resume_text = extract_resume_text(profile.get("resume_path", ""))
             min_score: int = profile["preferences"].get("min_match_score", 65)
 
             for job_row in unscored:
@@ -524,7 +750,7 @@ async def score_all_unscored() -> dict:
                             f"Location: {job_row['location']}"
                         )
                     )
-                    result = brain.match_job(desc, profile)
+                    result = brain.match_job(desc, profile, resume_text=resume_text)
                     score: int = result.get("score", 0)
                     log_matched(
                         job_row["id"],
@@ -551,7 +777,7 @@ async def score_all_unscored() -> dict:
 
 
 # ===========================================================================
-# REST API — Auto-Apply (Form Filling)
+# REST API — Apply (Form Filling)
 # ===========================================================================
 
 # Track active apply sessions so we can report status / cancel
@@ -598,7 +824,7 @@ async def apply_single_job(job_id: str, body: dict = {}) -> dict:
             with open(profile_path) as f:
                 profile = yaml.safe_load(f)
 
-            brain = ClaudeBrain(verbose=False)
+            brain = ClaudeBrain(verbose=False, profile=profile)
             cover_letter = job.get("cover_letter", "")
 
             await broadcast_event({
@@ -728,7 +954,7 @@ async def apply_batch(body: dict = {}) -> dict:
             from adapters.generic import apply_generic
             from utils.tracker import log_applied
 
-            brain = ClaudeBrain(verbose=False)
+            brain = ClaudeBrain(verbose=False, profile=profile)
             min_delay = rate_limits.get("min_delay_seconds", 60)
             max_delay = rate_limits.get("max_delay_seconds", 180)
 
@@ -848,7 +1074,7 @@ async def apply_batch(body: dict = {}) -> dict:
 
 @app.get("/api/apply/status")
 async def apply_status() -> dict:
-    """Get the current auto-apply session status."""
+    """Get the current apply session status."""
     return {
         "running": _apply_state["running"],
         "current_job_id": _apply_state["job_id"],
@@ -979,8 +1205,10 @@ async def start_yolo(body: dict = {}) -> dict:
 
                 try:
                     from utils.brain import ClaudeBrain
+                    from utils.resume_parser import extract_resume_text
 
-                    brain = ClaudeBrain(verbose=False)
+                    brain = ClaudeBrain(verbose=False, profile=profile)
+                    resume_text = extract_resume_text(profile.get("resume_path", ""))
                     unscored = get_unscored_jobs()
                     min_score = min_score_override or profile["preferences"].get("min_match_score", 65)
                     scored_count = 0
@@ -993,7 +1221,7 @@ async def start_yolo(body: dict = {}) -> dict:
                                 job_row.get("description", "")
                                 or f"Job: {job_row['title']} at {job_row['company']}. Location: {job_row['location']}"
                             )
-                            result = brain.match_job(desc, profile)
+                            result = brain.match_job(desc, profile, resume_text=resume_text)
                             score = result.get("score", 0)
                             log_matched(job_row["id"], score, result.get("reasoning", ""), result.get("cover_letter", ""))
                             if score < min_score:

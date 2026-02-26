@@ -1,5 +1,5 @@
 /**
- * ORBITAL COMMAND — Mission Control Dashboard
+ * MR.Jobs — Job Intelligence Dashboard
  *
  * Alpine.js application with:
  * - Real-time WebSocket event feed
@@ -9,7 +9,7 @@
  * - Full job CRUD with expandable detail rows
  */
 
-function missionControl() {
+function mrjobs() {
   return {
     // ----- Core State -----
     jobs: [],
@@ -60,13 +60,16 @@ function missionControl() {
     // ----- View Routing -----
     currentView: "dashboard", // 'dashboard' | 'profile'
 
-    // ----- Auto-Apply -----
+    // ----- Apply State -----
     applyState: {
       running: false,
       job_id: null,
       progress: [],
       total: 0,
     },
+
+    // ----- Follow-ups -----
+    followUps: { overdue: [], ghosts: [] },
 
     // ----- YOLO Mode -----
     yoloState: {
@@ -90,6 +93,14 @@ function missionControl() {
     newResumeName: "",
     resumeDragActive: false,
 
+    // ----- Profile AI Analysis -----
+    profileScoring: false,
+    profileInsights: null,
+
+    // ----- Resume Tailoring -----
+    tailorData: {},
+    tailoring: {},
+
     // ----- Cover Letter Templates -----
     coverLetterTemplates: [],
     newTemplateName: "",
@@ -109,9 +120,32 @@ function missionControl() {
       schedule: false,
     },
 
+    // ----- Selection & Purge -----
+    selectedJobs: [],
+
     // ----- Charts -----
     scoreChart: null,
     timelineChart: null,
+
+    // ----- Setup Wizard -----
+    needsSetup: false,
+    wizardStep: 1,
+    wizardData: {
+      personal: {
+        first_name: "",
+        last_name: "",
+        email: "",
+        phone: "",
+        location: "",
+      },
+      preferences: { roles: [], min_match_score: 65, locations: ["Remote"] },
+      skills: { primary: [] },
+      search: { enabled: true, queries: [] },
+    },
+    wizardNewRole: "",
+    wizardNewLocation: "",
+    wizardNewSkill: "",
+    wizardNewQuery: "",
 
     // ----- Filters -----
     filters: {
@@ -156,6 +190,18 @@ function missionControl() {
     // ===================================================================
 
     async init() {
+      // Check if first-run setup is needed
+      try {
+        const res = await fetch("/api/profile");
+        const data = await res.json();
+        if (data.needs_setup) {
+          this.needsSetup = true;
+          return; // Don't load dashboard data yet
+        }
+      } catch (e) {
+        // Server might not be ready yet
+      }
+
       await Promise.all([
         this.fetchJobs(),
         this.fetchStats(),
@@ -163,6 +209,7 @@ function missionControl() {
         this.fetchStatuses(),
         this.fetchProfile(),
         this.fetchSchedulerStatus(),
+        this.fetchFollowUps(),
       ]);
       this.connectWebSocket();
       this.$nextTick(() => this.initCharts());
@@ -176,6 +223,82 @@ function missionControl() {
       this._countdownTimer = setInterval(() => this.updateCountdowns(), 1000);
 
       this.addFeedItem("System initialized. All stations nominal.", "#22d3ee");
+    },
+
+    // ===================================================================
+    // SETUP WIZARD
+    // ===================================================================
+
+    wizardNext() {
+      if (this.wizardStep < 4) this.wizardStep++;
+    },
+
+    wizardBack() {
+      if (this.wizardStep > 1) this.wizardStep--;
+    },
+
+    wizardAddRole() {
+      const val = this.wizardNewRole?.trim();
+      if (val && !this.wizardData.preferences.roles.includes(val)) {
+        this.wizardData.preferences.roles.push(val);
+      }
+      this.wizardNewRole = "";
+    },
+
+    wizardRemoveRole(i) {
+      this.wizardData.preferences.roles.splice(i, 1);
+    },
+
+    wizardAddLocation() {
+      const val = this.wizardNewLocation?.trim();
+      if (val && !this.wizardData.preferences.locations.includes(val)) {
+        this.wizardData.preferences.locations.push(val);
+      }
+      this.wizardNewLocation = "";
+    },
+
+    wizardRemoveLocation(i) {
+      this.wizardData.preferences.locations.splice(i, 1);
+    },
+
+    wizardAddSkill() {
+      const val = this.wizardNewSkill?.trim();
+      if (val && !this.wizardData.skills.primary.includes(val)) {
+        this.wizardData.skills.primary.push(val);
+      }
+      this.wizardNewSkill = "";
+    },
+
+    wizardRemoveSkill(i) {
+      this.wizardData.skills.primary.splice(i, 1);
+    },
+
+    wizardAddQuery() {
+      const val = this.wizardNewQuery?.trim();
+      if (val && !this.wizardData.search.queries.includes(val)) {
+        this.wizardData.search.queries.push(val);
+      }
+      this.wizardNewQuery = "";
+    },
+
+    wizardRemoveQuery(i) {
+      this.wizardData.search.queries.splice(i, 1);
+    },
+
+    async wizardSubmit() {
+      try {
+        const res = await fetch("/api/setup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(this.wizardData),
+        });
+        if (!res.ok) throw new Error("Setup failed");
+        this.needsSetup = false;
+        // Re-initialize the dashboard
+        await this.init();
+      } catch (err) {
+        alert("Setup failed: " + err.message);
+      }
     },
 
     // ===================================================================
@@ -370,6 +493,51 @@ function missionControl() {
       }
     },
 
+    // ===================================================================
+    // FOLLOW-UPS & GHOST DETECTION
+    // ===================================================================
+
+    async fetchFollowUps() {
+      try {
+        const res = await fetch("/api/follow-ups");
+        this.followUps = await res.json();
+      } catch (_) {}
+    },
+
+    async markFollowUpDone(jobId, nextDays = 7) {
+      try {
+        await fetch(`/api/jobs/${jobId}/follow-up`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ next_days: nextDays }),
+        });
+        this.notify("Follow-up marked done, next scheduled.", "success");
+        this.fetchFollowUps();
+        this.fetchJobs();
+      } catch (err) {
+        this.notify(`Follow-up error: ${err.message}`, "error");
+      }
+    },
+
+    async dismissFollowUp(jobId) {
+      try {
+        await fetch(`/api/jobs/${jobId}/dismiss-follow-up`, { method: "POST" });
+        this.notify("Follow-up dismissed.", "info");
+        this.fetchFollowUps();
+        this.fetchJobs();
+      } catch (err) {
+        this.notify(`Dismiss error: ${err.message}`, "error");
+      }
+    },
+
+    isOverdue(job) {
+      return this.followUps.overdue?.some((f) => f.id === job.id);
+    },
+
+    isGhost(job) {
+      return this.followUps.ghosts?.some((f) => f.id === job.id);
+    },
+
     async saveNotes(jobId) {
       try {
         await fetch(`/api/jobs/${jobId}`, {
@@ -414,8 +582,117 @@ function missionControl() {
       }
     },
 
+    async tailorJob(jobId) {
+      this.tailoring[jobId] = true;
+      this.notify("Generating tailored resume content...", "info");
+      try {
+        await fetch(`/api/jobs/${jobId}/tailor`, { method: "POST" });
+      } catch (err) {
+        this.tailoring[jobId] = false;
+        this.notify(`Tailoring failed: ${err.message}`, "error");
+      }
+    },
+
+    async fetchTailorData(jobId) {
+      try {
+        const res = await fetch(`/api/jobs/${jobId}/tailor`);
+        const data = await res.json();
+        if (data && (data.tailored_summary || data.tailored_bullets?.length)) {
+          this.tailorData[jobId] = data;
+        }
+      } catch (_) {}
+    },
+
     // ===================================================================
-    // AUTO-APPLY
+    // SELECTION, IGNORE & PURGE
+    // ===================================================================
+
+    toggleSelectJob(jobId) {
+      const idx = this.selectedJobs.indexOf(jobId);
+      if (idx >= 0) {
+        this.selectedJobs.splice(idx, 1);
+      } else {
+        this.selectedJobs.push(jobId);
+      }
+    },
+
+    toggleSelectAll(event) {
+      if (event.target.checked) {
+        this.selectedJobs = this.jobs.map((j) => j.id);
+      } else {
+        this.selectedJobs = [];
+      }
+    },
+
+    async ignoreSelected() {
+      const count = this.selectedJobs.length;
+      if (!count) return;
+      if (
+        !confirm(
+          `Mark ${count} job(s) as IGNORED?\n\nThey will be excluded from future discovery runs.`,
+        )
+      )
+        return;
+      try {
+        const res = await fetch("/api/jobs/ignore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ job_ids: this.selectedJobs }),
+        });
+        const data = await res.json();
+        this.notify(
+          `${data.ignored} job(s) ignored. They won't reappear.`,
+          "success",
+        );
+        this.selectedJobs = [];
+        this.fetchJobs();
+        this.fetchStats();
+      } catch (err) {
+        this.notify(`Ignore failed: ${err.message}`, "error");
+      }
+    },
+
+    async confirmPurge() {
+      const choice = prompt(
+        "PURGE ALL DISCOVERY DATA\n\n" +
+          "Type 'purge' to delete all jobs (keep ignore list)\n" +
+          "Type 'nuke' to delete everything including ignore list\n" +
+          "Press Cancel to abort",
+      );
+      if (!choice) return;
+      const keepIgnores = choice.trim().toLowerCase() !== "nuke";
+      if (
+        choice.trim().toLowerCase() !== "purge" &&
+        choice.trim().toLowerCase() !== "nuke"
+      ) {
+        this.notify("Aborted — type 'purge' or 'nuke' to confirm.", "warning");
+        return;
+      }
+      try {
+        const res = await fetch("/api/purge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ keep_ignore_list: keepIgnores }),
+        });
+        const data = await res.json();
+        this.notify(
+          `Purged ${data.jobs_deleted} jobs.` +
+            (data.ignores_cleared
+              ? ` Cleared ${data.ignores_cleared} ignore entries.`
+              : " Ignore list preserved."),
+          "success",
+        );
+        this.selectedJobs = [];
+        this.fetchJobs();
+        this.fetchStats();
+        this.initCharts();
+      } catch (err) {
+        this.notify(`Purge failed: ${err.message}`, "error");
+      }
+    },
+
+    // ===================================================================
+    // APPLY
     // ===================================================================
 
     async applyToJob(jobId) {
@@ -451,7 +728,7 @@ function missionControl() {
       const mode = dryRun ? "DRY RUN" : "LIVE";
       const msg = dryRun
         ? "Start DRY RUN?\n\nThis will fill forms for all matched jobs but NOT submit them. Browser will open so you can watch."
-        : "Start LIVE AUTO-APPLY?\n\nThis will ACTUALLY SUBMIT applications for all matched jobs. Are you sure?";
+        : "Start LIVE APPLY?\n\nThis will ACTUALLY SUBMIT applications for all matched jobs. Are you sure?";
 
       if (!confirm(msg)) return;
 
@@ -612,6 +889,9 @@ function missionControl() {
 
     toggleExpand(jobId) {
       this.expandedJob = this.expandedJob === jobId ? null : jobId;
+      if (this.expandedJob === jobId) {
+        this.fetchTailorData(jobId);
+      }
     },
 
     toggleSort(col) {
@@ -849,6 +1129,21 @@ function missionControl() {
           this.notify(`Rescore failed: ${event.data.error}`, "error");
           break;
 
+        case "tailor_complete":
+          this.tailoring[event.data.id] = false;
+          this.notify("Resume tailoring complete!", "success");
+          this.addFeedItem(
+            `Tailored resume for ${event.data.id?.substring(0, 8)}`,
+            "#8b5cf6",
+          );
+          this.fetchTailorData(event.data.id);
+          break;
+
+        case "tailor_error":
+          this.tailoring[event.data.id] = false;
+          this.notify(`Tailoring error: ${event.data.error}`, "error");
+          break;
+
         case "email_check_complete":
           this.addFeedItem(
             `Email check: ${event.data.count} updates found.`,
@@ -896,7 +1191,7 @@ function missionControl() {
           this.fetchStats();
           break;
 
-        // ----- Auto-Apply Events -----
+        // ----- Apply Events -----
         case "apply_started":
           this.applyState.running = true;
           this.applyState.job_id = event.data.job_id;
@@ -1085,6 +1380,39 @@ function missionControl() {
             this.yoloState.phase = null;
           }
           break;
+
+        // ----- Profile AI Analysis -----
+        case "profile_score_complete":
+          this.profileScoring = false;
+          this.profileInsights = event.data;
+          this.notify(
+            `Profile score: ${event.data.profile_score}/100`,
+            "success",
+          );
+          this.addFeedItem(
+            `Profile analyzed: ${event.data.profile_score}/100`,
+            "#a78bfa",
+          );
+          break;
+
+        case "profile_score_error":
+          this.profileScoring = false;
+          this.notify(`Profile analysis failed: ${event.data.error}`, "error");
+          this.addFeedItem(
+            `Profile analysis error: ${event.data.error}`,
+            "#f43f5e",
+          );
+          break;
+
+        case "profile_score_started":
+          this.addFeedItem("AI analyzing profile + resume...", "#a78bfa");
+          break;
+
+        // ----- Follow-up Events -----
+        case "follow_up_set":
+        case "follow_up_done":
+          this.fetchFollowUps();
+          break;
       }
     },
 
@@ -1106,6 +1434,27 @@ function missionControl() {
     // ===================================================================
     // FULL PROFILE EDITOR
     // ===================================================================
+
+    async scoreProfile() {
+      this.profileScoring = true;
+      try {
+        const res = await fetch("/api/profile/score", { method: "POST" });
+        if (res.ok) {
+          this.notify(
+            "Profile analysis started — Claude is reading your resume...",
+            "success",
+          );
+          this.addFeedItem("Profile AI analysis started", "#a78bfa");
+        } else {
+          const data = await res.json();
+          this.notify(data.detail || "Profile analysis failed", "error");
+          this.profileScoring = false;
+        }
+      } catch (err) {
+        this.notify(`Profile analysis error: ${err.message}`, "error");
+        this.profileScoring = false;
+      }
+    },
 
     async loadFullProfile() {
       try {

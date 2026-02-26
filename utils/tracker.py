@@ -14,7 +14,7 @@ DB_PATH = Path(__file__).parent.parent / "applications.db"
 # All valid statuses
 VALID_STATUSES = [
     "discovered", "matched", "applied", "skipped", "failed",
-    "interviewing", "offer", "rejected", "withdrawn", "archived"
+    "interviewing", "offer", "rejected", "withdrawn", "archived", "ignored"
 ]
 
 
@@ -47,6 +47,15 @@ def get_db() -> sqlite3.Connection:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_company ON applications(company)
     """)
+    # Ignore-list: hashes of jobs to skip on future discovery runs
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ignored_hashes (
+            hash TEXT PRIMARY KEY,
+            title TEXT,
+            company TEXT,
+            ignored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     # Schema migration: add new columns if they don't exist
     _migrate_schema(conn)
     conn.commit()
@@ -66,6 +75,10 @@ def _migrate_schema(conn: sqlite3.Connection):
         "notes": "TEXT DEFAULT ''",
         "tags": "TEXT DEFAULT ''",
         "description": "TEXT DEFAULT ''",
+        "tailored_resume": "TEXT DEFAULT ''",
+        "follow_up_date": "TEXT",
+        "last_activity": "TEXT",
+        "follow_up_count": "INTEGER DEFAULT 0",
     }
 
     for col, col_type in migrations.items():
@@ -94,7 +107,11 @@ def _emit(event_type: str, data=None):
 
 
 def log_discovered(job) -> None:
-    """Log a newly discovered job."""
+    """Log a newly discovered job. Skips if on the ignore list."""
+    # Check ignore list first (fast hash lookup)
+    if is_ignored(job.title, job.company):
+        return
+
     conn = get_db()
     metadata = json.dumps(job.metadata) if isinstance(job.metadata, dict) else job.metadata
     conn.execute("""
@@ -130,14 +147,24 @@ def log_matched(job_id: str, score: int, reasoning: str, cover_letter: str) -> N
 
 
 def log_applied(job_id: str, success: bool) -> None:
-    """Mark a job as applied."""
+    """Mark a job as applied and set follow-up if successful."""
     status = "applied" if success else "failed"
+    now = datetime.now().isoformat()
     conn = get_db()
-    conn.execute("""
-        UPDATE applications
-        SET status = ?, applied_at = ?
-        WHERE id = ?
-    """, (status, datetime.now().isoformat(), job_id))
+    if success:
+        from datetime import timedelta
+        follow_up = (datetime.now() + timedelta(days=7)).isoformat()
+        conn.execute("""
+            UPDATE applications
+            SET status = ?, applied_at = ?, last_activity = ?, follow_up_date = ?
+            WHERE id = ?
+        """, (status, now, now, follow_up, job_id))
+    else:
+        conn.execute("""
+            UPDATE applications
+            SET status = ?, applied_at = ?
+            WHERE id = ?
+        """, (status, now, job_id))
     conn.commit()
     conn.close()
     _emit("job_applied", {"id": job_id, "success": success})
@@ -385,3 +412,186 @@ def get_companies() -> list:
     ).fetchall()
     conn.close()
     return [row["company"] for row in rows]
+
+
+def update_tailored_resume(job_id: str, tailored_data: dict) -> bool:
+    """Store tailored resume data for a job."""
+    conn = get_db()
+    conn.execute(
+        "UPDATE applications SET tailored_resume = ? WHERE id = ?",
+        (json.dumps(tailored_data), job_id)
+    )
+    conn.commit()
+    conn.close()
+    _emit("tailor_complete", {"id": job_id})
+    return True
+
+
+def get_tailored_resume(job_id: str) -> dict:
+    """Get tailored resume data for a job."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT tailored_resume FROM applications WHERE id = ?", (job_id,)
+    ).fetchone()
+    conn.close()
+    if row and row["tailored_resume"]:
+        try:
+            return json.loads(row["tailored_resume"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# Follow-up reminders & ghost detection
+# ---------------------------------------------------------------------------
+
+
+def set_follow_up(job_id: str, days: int = 7) -> bool:
+    """Set a follow-up reminder date for a job."""
+    from datetime import timedelta
+    follow_up = (datetime.now() + timedelta(days=days)).isoformat()
+    conn = get_db()
+    conn.execute(
+        "UPDATE applications SET follow_up_date = ?, last_activity = ? WHERE id = ?",
+        (follow_up, datetime.now().isoformat(), job_id)
+    )
+    conn.commit()
+    conn.close()
+    _emit("follow_up_set", {"id": job_id, "date": follow_up})
+    return True
+
+
+def get_overdue_follow_ups() -> list:
+    """Get jobs past their follow-up date that are still active (applied/interviewing)."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT * FROM applications
+        WHERE follow_up_date IS NOT NULL
+          AND follow_up_date <= datetime('now')
+          AND status IN ('applied', 'interviewing')
+        ORDER BY follow_up_date ASC
+    """).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_ghost_alerts(days: int = 14) -> list:
+    """Get jobs applied more than N days ago with no status change (potential ghosts)."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT * FROM applications
+        WHERE status = 'applied'
+          AND applied_at IS NOT NULL
+          AND datetime(applied_at, '+' || ? || ' days') <= datetime('now')
+          AND (last_activity IS NULL OR datetime(last_activity, '+' || ? || ' days') <= datetime('now'))
+        ORDER BY applied_at ASC
+    """, (days, days)).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def increment_follow_up(job_id: str, days: int = 7) -> bool:
+    """Mark a follow-up as done and schedule the next one."""
+    from datetime import timedelta
+    conn = get_db()
+    conn.execute("""
+        UPDATE applications
+        SET follow_up_count = COALESCE(follow_up_count, 0) + 1,
+            follow_up_date = ?,
+            last_activity = ?
+        WHERE id = ?
+    """, (
+        (datetime.now() + timedelta(days=days)).isoformat(),
+        datetime.now().isoformat(),
+        job_id,
+    ))
+    conn.commit()
+    conn.close()
+    _emit("follow_up_done", {"id": job_id})
+    return True
+
+
+def dismiss_follow_up(job_id: str) -> bool:
+    """Clear follow-up for a job."""
+    conn = get_db()
+    conn.execute(
+        "UPDATE applications SET follow_up_date = NULL WHERE id = ?",
+        (job_id,)
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Ignore list — hash-based dedup across discovery runs
+# ---------------------------------------------------------------------------
+
+import hashlib
+
+def _job_hash(title: str, company: str) -> str:
+    """Generate a stable hash from normalized title + company."""
+    key = f"{title.lower().strip()}|{company.lower().strip()}"
+    return hashlib.md5(key.encode()).hexdigest()
+
+
+def is_ignored(title: str, company: str) -> bool:
+    """Check if a job (by title+company) is in the ignore list."""
+    conn = get_db()
+    h = _job_hash(title, company)
+    row = conn.execute("SELECT hash FROM ignored_hashes WHERE hash = ?", (h,)).fetchone()
+    conn.close()
+    return row is not None
+
+
+def ignore_jobs(job_ids: list) -> int:
+    """Mark jobs as ignored and add their hashes to the ignore list."""
+    conn = get_db()
+    count = 0
+    for jid in job_ids:
+        row = conn.execute("SELECT title, company FROM applications WHERE id = ?", (jid,)).fetchone()
+        if row:
+            h = _job_hash(row["title"], row["company"])
+            conn.execute(
+                "INSERT OR IGNORE INTO ignored_hashes (hash, title, company) VALUES (?, ?, ?)",
+                (h, row["title"], row["company"])
+            )
+            conn.execute("UPDATE applications SET status = 'ignored' WHERE id = ?", (jid,))
+            count += 1
+    conn.commit()
+    conn.close()
+    _emit("jobs_ignored", {"count": count})
+    return count
+
+
+def purge_all() -> dict:
+    """Nuke all discovery data but preserve the ignore list."""
+    conn = get_db()
+    job_count = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
+    conn.execute("DELETE FROM applications")
+    conn.commit()
+    conn.close()
+    _emit("purged", {"jobs_deleted": job_count})
+    return {"jobs_deleted": job_count}
+
+
+def purge_everything() -> dict:
+    """Nuke ALL data including ignore list — full factory reset."""
+    conn = get_db()
+    job_count = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
+    ignore_count = conn.execute("SELECT COUNT(*) FROM ignored_hashes").fetchone()[0]
+    conn.execute("DELETE FROM applications")
+    conn.execute("DELETE FROM ignored_hashes")
+    conn.commit()
+    conn.close()
+    _emit("purged", {"jobs_deleted": job_count, "ignores_cleared": ignore_count})
+    return {"jobs_deleted": job_count, "ignores_cleared": ignore_count}
+
+
+def get_ignored_count() -> int:
+    """Count of hashes in the ignore list."""
+    conn = get_db()
+    row = conn.execute("SELECT COUNT(*) FROM ignored_hashes").fetchone()
+    conn.close()
+    return row[0]

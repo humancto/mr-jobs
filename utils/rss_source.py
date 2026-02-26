@@ -13,8 +13,14 @@ def discover_rss_jobs(profile: dict) -> list:
 
     all_jobs = []
     role_keywords = [kw.lower() for kw in profile["preferences"]["roles"]]
-    skill_keywords = [kw.lower() for kw in profile["preferences"].get("keywords", [])]
-    all_keywords = role_keywords + skill_keywords
+    # Discovery uses ONLY role titles + generic stems — cast widest net
+    # Skills/keywords are used by AI scoring only, NOT for discovery filtering
+    all_keywords = list(set(
+        role_keywords +
+        ["engineer", "developer", "architect", "sre", "devops", "sde", "staff", "lead",
+         "software", "backend", "frontend", "fullstack", "platform", "infrastructure",
+         "data", "ml", "ai", "cloud", "security", "systems"]
+    ))
 
     # RemoteOK
     try:

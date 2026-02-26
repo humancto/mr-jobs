@@ -3,6 +3,11 @@ Claude Code CLI Brain — Uses `claude` CLI as the reasoning engine.
 
 Instead of paying for API calls, this shells out to the Claude Code CLI
 which is included in your Pro/Max subscription.
+
+Supports pluggable LLM backends via profile.yaml `ai` section.
+When a profile with `ai` config is provided, requests are routed through
+the configured backend per component. Without a profile, falls back to
+direct Claude CLI calls (original behavior).
 """
 
 import os
@@ -18,10 +23,11 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 
 class ClaudeBrain:
-    """Interface to Claude Code CLI for AI reasoning."""
+    """Interface to AI reasoning — routes through pluggable LLM backends."""
 
-    def __init__(self, verbose: bool = True):
+    def __init__(self, verbose: bool = True, profile: dict = None):
         self.verbose = verbose
+        self.profile = profile
         self._verify_cli()
 
     def _verify_cli(self):
@@ -46,15 +52,25 @@ class ClaudeBrain:
                 "Then run: claude auth"
             )
 
-    def ask(self, prompt: str, timeout: int = 120) -> str:
+    def ask(self, prompt: str, timeout: int = 120, component: str = "general") -> str:
         """
-        Send a prompt to Claude CLI and return the text response.
-        Uses -p (print mode) for non-interactive single-shot queries.
+        Send a prompt to the configured LLM backend.
+
+        When a profile with `ai` config is available, routes through the
+        pluggable backend for the given component. Otherwise falls back to
+        direct Claude CLI calls (original behavior).
         """
         if self.verbose:
             preview = prompt[:80].replace('\n', ' ')
-            print(f"  🧠 Asking Claude: {preview}...")
+            print(f"  AI: {preview}...")
 
+        # Route through pluggable backend if profile is available
+        if self.profile:
+            from utils.llm import get_backend
+            backend = get_backend(component, self.profile)
+            return backend.ask(prompt, timeout=timeout)
+
+        # Fallback: direct Claude CLI (original behavior)
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         result = subprocess.run(
             ["claude", "-p", "--output-format", "json"],
@@ -78,8 +94,15 @@ class ClaudeBrain:
             # Fallback: return raw stdout
             return result.stdout.strip()
 
-    def ask_json(self, prompt: str, timeout: int = 120) -> dict:
-        """Ask Claude and parse JSON from the response."""
+    def ask_json(self, prompt: str, timeout: int = 120, component: str = "general") -> dict:
+        """Ask the LLM and parse JSON from the response."""
+        # Route through pluggable backend if profile is available
+        if self.profile:
+            from utils.llm import get_backend
+            backend = get_backend(component, self.profile)
+            return backend.ask_json(prompt, timeout=timeout)
+
+        # Fallback: original behavior
         full_prompt = prompt + (
             "\n\nIMPORTANT: Respond ONLY with valid JSON. "
             "No markdown fencing, no explanation, no preamble. Just the JSON object."
@@ -96,8 +119,8 @@ class ClaudeBrain:
             return json.loads(cleaned)
         except json.JSONDecodeError as e:
             if self.verbose:
-                print(f"  ⚠ JSON parse failed, raw response:\n{raw[:500]}")
-            raise ValueError(f"Claude didn't return valid JSON: {e}")
+                print(f"  Warning: JSON parse failed, raw response:\n{raw[:500]}")
+            raise ValueError(f"LLM didn't return valid JSON: {e}")
 
     def ask_cached(self, prompt: str, cache_key: Optional[str] = None) -> str:
         """Ask with disk caching — useful for repeated identical questions."""
@@ -114,7 +137,7 @@ class ClaudeBrain:
         cache_file.write_text(result)
         return result
 
-    def match_job(self, job_description: str, profile: dict) -> dict:
+    def match_job(self, job_description: str, profile: dict, resume_text: str = "") -> dict:
         """Score a job posting against the user's profile with enhanced context."""
         # Build enhanced profile context
         skills = profile.get("skills", {})
@@ -133,6 +156,9 @@ APPLICANT PROFILE:
 - Remote only: {profile['preferences']['remote_only']}
 - Ideal job: {ideal_job[:500]}
 - Favorite companies (bonus +10 if match): {', '.join(favorites)}
+
+APPLICANT RESUME:
+{resume_text[:4000] if resume_text else '(No resume provided)'}
 
 JOB POSTING:
 {job_description[:8000]}
@@ -158,7 +184,7 @@ Scoring guidelines:
 - If the company is in the favorites list, add 10 bonus points (max 100)
 - Set "apply" to true only if score >= {profile['preferences'].get('min_match_score', 65)}
 """
-        return self.ask_json(prompt)
+        return self.ask_json(prompt, component="scoring")
 
     def score_profile(self, profile: dict, resume_text: str = "") -> dict:
         """Analyze the user's profile and resume for job market readiness."""
@@ -193,7 +219,7 @@ Return a JSON assessment:
   "summary": "<2-3 sentence overall assessment>"
 }}
 """
-        return self.ask_json(prompt, timeout=180)
+        return self.ask_json(prompt, timeout=180, component="profile_analysis")
 
     def answer_question(self, question: str, profile: dict, context: str = "") -> str:
         """Answer a custom application question using AI."""
@@ -209,7 +235,7 @@ Additional context: {context}
 
 Question: {question}
 
-Answer (be concise, direct, professional):""")
+Answer (be concise, direct, professional):""", component="form_analysis")
 
     def analyze_form(self, form_html: str, profile: dict) -> list:
         """Analyze a form's HTML and return fill instructions."""
@@ -239,4 +265,4 @@ Rules:
 - Put the submit/next button click LAST
 - Skip hidden fields and CSRF tokens
 - For dropdowns, use the actual option value attribute
-""")
+""", component="form_analysis")

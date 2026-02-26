@@ -7,6 +7,21 @@ import traceback
 from typing import Optional
 
 
+import math
+
+
+def _clean(val, fallback=""):
+    """Sanitize a pandas value — convert NaN/None to fallback string."""
+    if val is None:
+        return fallback
+    if isinstance(val, float) and math.isnan(val):
+        return fallback
+    s = str(val).strip()
+    if s.lower() in ("nan", "none", ""):
+        return fallback
+    return s
+
+
 def discover_jobspy_jobs(profile: dict) -> list:
     """
     Search for jobs using python-jobspy across multiple job boards.
@@ -17,8 +32,12 @@ def discover_jobspy_jobs(profile: dict) -> list:
     search_config = profile.get("search", {})
     queries = search_config.get("queries", profile["preferences"].get("roles", []))
     locations = search_config.get("locations", profile["preferences"].get("locations", ["Remote"]))
-    distance = search_config.get("distance_miles", 50)
-    results_wanted = search_config.get("results_per_query", 25)
+    distance = search_config.get("distance_miles", 100)  # Wide net — let AI score relevance
+    results_wanted = search_config.get("results_per_query", 50)  # More results per query
+
+    # Always include "Remote" if not already there
+    if not any("remote" in loc.lower() for loc in locations):
+        locations = locations + ["Remote"]
 
     all_jobs = []
 
@@ -50,13 +69,21 @@ def discover_jobspy_jobs(profile: dict) -> list:
 
                 for _, row in results.iterrows():
                     try:
-                        title = str(row.get("title", ""))
-                        company = str(row.get("company_name", "Unknown"))
-                        job_location = str(row.get("location", location))
-                        job_url = str(row.get("job_url", ""))
-                        description = str(row.get("description", ""))
-                        site = str(row.get("site", "jobspy"))
-                        date_posted = str(row.get("date_posted", ""))
+                        title = _clean(row.get("title"), "Untitled")
+                        company = _clean(row.get("company_name"), "Unknown")
+                        job_location = _clean(row.get("location"), location)
+                        job_url = _clean(row.get("job_url"))
+                        description = _clean(row.get("description"))
+                        site = _clean(row.get("site"), "jobspy")
+                        date_posted = _clean(row.get("date_posted"))
+
+                        # Skip garbage entries: no URL or "Unknown" company with no description
+                        if not job_url or not job_url.startswith("http"):
+                            continue
+                        if company == "Unknown" and not description:
+                            continue
+                        if title == "Untitled":
+                            continue
 
                         # Generate a stable ID from URL or title+company
                         import hashlib
@@ -68,10 +95,12 @@ def discover_jobspy_jobs(profile: dict) -> list:
                         salary_min = None
                         salary_max = None
                         try:
-                            if row.get("min_amount") is not None:
-                                salary_min = int(row["min_amount"])
-                            if row.get("max_amount") is not None:
-                                salary_max = int(row["max_amount"])
+                            raw_min = row.get("min_amount")
+                            raw_max = row.get("max_amount")
+                            if raw_min is not None and not (isinstance(raw_min, float) and math.isnan(raw_min)):
+                                salary_min = int(raw_min)
+                            if raw_max is not None and not (isinstance(raw_max, float) and math.isnan(raw_max)):
+                                salary_max = int(raw_max)
                         except (ValueError, TypeError):
                             pass
 

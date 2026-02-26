@@ -1,6 +1,6 @@
-# Auto-Apply Agent Instructions
+# MR.Jobs Agent Instructions
 
-This file tells Claude Code (or any AI agent) how the Auto-Apply system works so each new session can immediately understand and operate the system.
+This file tells Claude Code (or any AI agent) how the MR.Jobs system works so each new session can immediately understand and operate the system.
 
 ## What This Is
 

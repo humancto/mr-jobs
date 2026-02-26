@@ -93,3 +93,26 @@ email:
   email: ''
   app_password: ''
   check_interval_hours: 12
+
+# AI Backend Configuration (optional — defaults to claude_cli for everything)
+# Each component can independently use a different LLM backend.
+ai:
+  default_backend: claude_cli
+  backends:
+    claude_cli:
+      timeout: 120
+    # openai:
+    #   api_key: ${OPENAI_API_KEY}
+    #   model: gpt-4o
+    #   timeout: 60
+    # ollama:
+    #   base_url: http://localhost:11434
+    #   model: llama3
+    #   timeout: 120
+  components:
+    scoring: claude_cli
+    cover_letter: claude_cli
+    resume_tailoring: claude_cli
+    form_analysis: claude_cli
+    email_classification: claude_cli
+    profile_analysis: claude_cli

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-🚀 Auto-Apply — AI-Powered Job Application Automation
-=====================================================
+MR.Jobs — AI-Powered Job Intelligence
+======================================
 
 Uses Claude Code CLI as the AI brain + Playwright for browser automation.
 
@@ -72,7 +72,9 @@ def load_profile(path: str = "profile.yaml") -> dict:
 
 async def cmd_discover(profile: dict):
     """Discover jobs and score them — no applications sent."""
-    brain = ClaudeBrain(verbose=True)
+    brain = ClaudeBrain(verbose=True, profile=profile)
+    from utils.resume_parser import extract_resume_text
+    resume_text = extract_resume_text(profile.get("resume_path", ""))
 
     print("\n🔍 Discovering jobs from configured boards...\n")
     jobs = await discover_all_jobs(profile)
@@ -99,7 +101,7 @@ async def cmd_discover(profile: dict):
         print(f"  [{i+1}/{len(jobs)}] 🔍 {job.title} @ {job.company} ({job.location})")
 
         try:
-            result = brain.match_job(job.description, profile)
+            result = brain.match_job(job.description, profile, resume_text=resume_text)
             score = result.get("score", 0)
             should_apply = result.get("apply", False)
             reasoning = result.get("reasoning", "")
@@ -136,7 +138,9 @@ async def cmd_discover(profile: dict):
 
 async def cmd_apply(profile: dict, dry_run: bool = True):
     """Discover, score, and apply to matching jobs."""
-    brain = ClaudeBrain(verbose=True)
+    brain = ClaudeBrain(verbose=True, profile=profile)
+    from utils.resume_parser import extract_resume_text
+    resume_text = extract_resume_text(profile.get("resume_path", ""))
     rate_limits = profile.get("rate_limits", {})
     max_per_day = rate_limits.get("max_applications_per_day", 25)
     min_delay = rate_limits.get("min_delay_seconds", 60)
@@ -164,7 +168,7 @@ async def cmd_apply(profile: dict, dry_run: bool = True):
             continue
         log_discovered(job)
         try:
-            result = brain.match_job(job.description, profile)
+            result = brain.match_job(job.description, profile, resume_text=resume_text)
             score = result.get("score", 0)
             log_matched(job.id, score, result.get("reasoning", ""), result.get("cover_letter", ""))
             if result.get("apply") and score >= min_score:
@@ -248,7 +252,7 @@ async def cmd_apply(profile: dict, dry_run: bool = True):
 
 async def cmd_single(profile: dict, url: str, dry_run: bool = True):
     """Apply to a single job URL."""
-    brain = ClaudeBrain(verbose=True)
+    brain = ClaudeBrain(verbose=True, profile=profile)
 
     print(f"\n🎯 Single application: {url}")
     mode = "DRY RUN" if dry_run else "LIVE"
@@ -289,7 +293,9 @@ async def cmd_rescore(profile: dict):
     """Re-score all unscored jobs."""
     import httpx
     import re as _re
-    brain = ClaudeBrain(verbose=True)
+    brain = ClaudeBrain(verbose=True, profile=profile)
+    from utils.resume_parser import extract_resume_text
+    resume_text = extract_resume_text(profile.get("resume_path", ""))
     unscored = get_unscored_jobs()
 
     if not unscored:
@@ -332,7 +338,7 @@ async def cmd_rescore(profile: dict):
                     f"Location: {job_row['location']}"
                 )
 
-            result = brain.match_job(desc, profile)
+            result = brain.match_job(desc, profile, resume_text=resume_text)
             score = result.get("score", 0)
             reasoning = result.get("reasoning", "")
             cover_letter = result.get("cover_letter", "")
@@ -353,7 +359,7 @@ async def cmd_rescore(profile: dict):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="🚀 Auto-Apply — AI-Powered Job Application Automation",
+        description="MR.Jobs — AI-Powered Job Intelligence",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

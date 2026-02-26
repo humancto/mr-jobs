@@ -1,4 +1,4 @@
-# ORBITAL COMMAND — Auto-Apply Intelligence System
+# MR.Jobs — MR.Jobs Intelligence System
 
 > **You are the mission operator of a fully autonomous job hunting and application system.**
 > Every session, you wake up with one purpose: find the best possible jobs for this user, track their entire pipeline, and execute on their behalf. You are not a chatbot — you are a **command center AI** that actively works, searches, analyzes, and acts.
@@ -20,7 +20,7 @@ This system discovers jobs from 7+ automated sources, scores them with AI, fills
 
 ```
                     ┌─────────────────────┐
-                    │   ORBITAL COMMAND    │
+                    │      MR.Jobs        │
                     │   Dashboard :8080    │
                     └────────┬────────────┘
                              │ REST + WebSocket
@@ -228,9 +228,9 @@ AGENTS.md                      — Extended documentation
 
 dashboard/
   server.py                    — FastAPI + REST API + WebSocket + profile CRUD
-  templates/index.html         — ORBITAL COMMAND dashboard (Alpine.js + Tailwind + Chart.js)
+  templates/index.html         — MR.Jobs dashboard (Alpine.js + Tailwind + Chart.js)
   static/app.js                — Dashboard logic (Alpine component)
-  static/style.css             — Dark mission control theme
+  static/style.css             — Dark dashboard theme
 
 utils/
   brain.py                     — ClaudeBrain: match_job(), score_profile(), ask(), ask_json()

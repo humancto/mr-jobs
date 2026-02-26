@@ -15,8 +15,10 @@ _configured = False
 
 
 def get_profile():
-    """Load profile.yaml."""
+    """Load profile.yaml. Returns None if missing."""
     path = Path(__file__).parent / "profile.yaml"
+    if not path.exists():
+        return None
     with open(path) as f:
         return yaml.safe_load(f)
 
@@ -28,6 +30,8 @@ async def scheduled_discover():
         from utils.tracker import is_already_seen, log_discovered
 
         profile = get_profile()
+        if profile is None:
+            return
         jobs = await discover_all_jobs(profile)
         new_count = 0
         for job in jobs:
@@ -53,18 +57,22 @@ async def scheduled_score():
         from utils.brain import ClaudeBrain
 
         profile = get_profile()
+        if profile is None:
+            return
         unscored = get_unscored_jobs()
         if not unscored:
             return
 
-        brain = ClaudeBrain(verbose=False)
+        brain = ClaudeBrain(verbose=False, profile=profile)
+        from utils.resume_parser import extract_resume_text
+        resume_text = extract_resume_text(profile.get("resume_path", ""))
         min_score = profile["preferences"].get("min_match_score", 65)
         scored = 0
 
         for job_row in unscored:
             try:
                 desc = job_row.get("description", "") or f"Job: {job_row['title']} at {job_row['company']}"
-                result = brain.match_job(desc, profile)
+                result = brain.match_job(desc, profile, resume_text=resume_text)
                 score = result.get("score", 0)
                 log_matched(job_row["id"], score, result.get("reasoning", ""), result.get("cover_letter", ""))
                 if score < min_score:
@@ -97,6 +105,23 @@ async def scheduled_email_check():
         print(f"[Scheduler] Email check failed: {e}")
 
 
+async def scheduled_follow_up_check():
+    """Check for overdue follow-ups and log count."""
+    try:
+        from utils.tracker import get_overdue_follow_ups, get_ghost_alerts
+        overdue = get_overdue_follow_ups()
+        ghosts = get_ghost_alerts(days=14)
+        if overdue or ghosts:
+            print(f"[Scheduler] Follow-up check: {len(overdue)} overdue, {len(ghosts)} ghosts")
+        _last_results["follow_up"] = {
+            "overdue": len(overdue),
+            "ghosts": len(ghosts),
+            "timestamp": __import__("datetime").datetime.now().isoformat()
+        }
+    except Exception as e:
+        print(f"[Scheduler] Follow-up check failed: {e}")
+
+
 def setup_scheduler():
     """
     Configure scheduler jobs (but don't start yet).
@@ -104,6 +129,9 @@ def setup_scheduler():
     """
     global _configured
     profile = get_profile()
+    if profile is None:
+        print("[Scheduler] No profile.yaml found — skipping scheduler setup (waiting for wizard)")
+        return
     schedule_config = profile.get("schedule", {})
 
     if not schedule_config.get("enabled", True):
@@ -140,6 +168,15 @@ def setup_scheduler():
             name="Email Check",
             replace_existing=True
         )
+
+    # Follow-up reminder & ghost detection check
+    scheduler.add_job(
+        scheduled_follow_up_check,
+        trigger=IntervalTrigger(hours=6),
+        id="follow_up",
+        name="Follow-up Check",
+        replace_existing=True
+    )
 
     _configured = True
     print(f"[Scheduler] Configured — Discovery every {discover_hours}h, Scoring every {score_minutes}m")

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ORBITAL COMMAND — Auto-Apply</title>
+    <title>MR.Jobs — Job Intelligence</title>
 
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -27,7 +27,208 @@
     <link rel="stylesheet" href="/static/style.css" />
 </head>
 
-<body x-data="missionControl()" x-init="init()" x-cloak>
+<body x-data="mrjobs()" x-init="init()" x-cloak>
+
+    <!-- ===================================================================
+         FIRST-RUN SETUP WIZARD
+    ==================================================================== -->
+    <div x-show="needsSetup" x-cloak class="fixed inset-0 z-[100] bg-[#0a0e17] flex items-center justify-center">
+      <div class="w-full max-w-2xl mx-4">
+        <!-- Logo + Title -->
+        <div class="text-center mb-8">
+          <div class="inline-flex items-center gap-3 mb-4">
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white text-xl font-bold">MR</div>
+            <span class="text-3xl font-bold text-white tracking-tight" style="font-family: var(--font-display);">MR.Jobs</span>
+          </div>
+          <p class="text-[#64748b] text-sm" style="font-family: var(--font-mono);">First-time setup — let's configure your job search</p>
+        </div>
+
+        <!-- Progress Bar -->
+        <div class="flex items-center justify-center gap-2 mb-8">
+          <template x-for="step in [1,2,3,4]" :key="step">
+            <div class="flex items-center gap-2">
+              <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold"
+                   style="font-family: var(--font-mono);"
+                   :class="wizardStep >= step ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40' : 'bg-[#111827] text-[#64748b] border border-[#1e293b]'"
+                   x-text="step"></div>
+              <div x-show="step < 4" class="w-8 h-0.5" :class="wizardStep > step ? 'bg-cyan-500/40' : 'bg-[#1e293b]'"></div>
+            </div>
+          </template>
+        </div>
+
+        <!-- Wizard Card -->
+        <div class="mc-panel p-6">
+
+          <!-- Step 1: Identity -->
+          <div x-show="wizardStep === 1">
+            <h2 class="text-lg font-semibold text-white mb-1">Who are you?</h2>
+            <p class="text-[#64748b] text-xs mb-6" style="font-family: var(--font-mono);">Basic info for applications</p>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="pref-label">First Name</label>
+                <input x-model="wizardData.personal.first_name" class="mc-input" placeholder="John" />
+              </div>
+              <div>
+                <label class="pref-label">Last Name</label>
+                <input x-model="wizardData.personal.last_name" class="mc-input" placeholder="Doe" />
+              </div>
+              <div>
+                <label class="pref-label">Email</label>
+                <input x-model="wizardData.personal.email" type="email" class="mc-input" placeholder="you@example.com" />
+              </div>
+              <div>
+                <label class="pref-label">Phone</label>
+                <input x-model="wizardData.personal.phone" class="mc-input" placeholder="+1-555-000-0000" />
+              </div>
+              <div class="col-span-2">
+                <label class="pref-label">Location</label>
+                <input x-model="wizardData.personal.location" class="mc-input" placeholder="San Francisco, CA" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 2: Resume Upload -->
+          <div x-show="wizardStep === 2">
+            <h2 class="text-lg font-semibold text-white mb-1">Upload Your Resume</h2>
+            <p class="text-[#64748b] text-xs mb-6" style="font-family: var(--font-mono);">PDF format — used for AI scoring and applications</p>
+            <div class="drop-zone" id="wizard-drop-zone"
+                 @dragover.prevent="$el.classList.add('active')"
+                 @dragleave.prevent="$el.classList.remove('active')"
+                 @drop.prevent="
+                   $el.classList.remove('active');
+                   const file = $event.dataTransfer.files[0];
+                   if (file && file.type === 'application/pdf') {
+                     const fd = new FormData();
+                     fd.append('file', file);
+                     fd.append('name', 'Default');
+                     fetch('/api/resumes', { method: 'POST', body: fd })
+                       .then(r => r.json())
+                       .then(d => notify('Resume uploaded!', 'success'))
+                       .catch(e => notify('Upload failed', 'error'));
+                   }
+                 ">
+              <div class="text-[#64748b] mb-2">
+                <svg class="w-10 h-10 mx-auto mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <p class="text-sm">Drag & drop your resume PDF here</p>
+                <p class="text-xs mt-1">or</p>
+              </div>
+              <label class="cmd-btn primary cursor-pointer mt-2 inline-block">
+                Browse Files
+                <input type="file" accept=".pdf" class="hidden" @change="
+                  const file = $event.target.files[0];
+                  if (file) {
+                    const fd = new FormData();
+                    fd.append('file', file);
+                    fd.append('name', 'Default');
+                    fetch('/api/resumes', { method: 'POST', body: fd })
+                      .then(r => r.json())
+                      .then(d => notify('Resume uploaded!', 'success'))
+                      .catch(e => notify('Upload failed', 'error'));
+                  }
+                " />
+              </label>
+            </div>
+            <p class="text-[#64748b] text-xs mt-4 text-center" style="font-family: var(--font-mono);">You can skip this step and add a resume later from the Profile tab.</p>
+          </div>
+
+          <!-- Step 3: Preferences -->
+          <div x-show="wizardStep === 3">
+            <h2 class="text-lg font-semibold text-white mb-1">Job Preferences</h2>
+            <p class="text-[#64748b] text-xs mb-6" style="font-family: var(--font-mono);">What roles, locations, and skills should we target?</p>
+
+            <!-- Roles -->
+            <div class="mb-5">
+              <label class="pref-label">Target Roles</label>
+              <div class="flex gap-2 mb-2">
+                <input x-model="wizardNewRole" @keydown.enter.prevent="wizardAddRole()" class="mc-input flex-1" placeholder="e.g. Software Engineer" />
+                <button @click="wizardAddRole()" class="cmd-btn primary">Add</button>
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <template x-for="(role, i) in wizardData.preferences.roles" :key="i">
+                  <span class="tag-chip"><span x-text="role"></span><span class="remove" @click="wizardRemoveRole(i)">&times;</span></span>
+                </template>
+              </div>
+            </div>
+
+            <!-- Locations -->
+            <div class="mb-5">
+              <label class="pref-label">Locations</label>
+              <div class="flex gap-2 mb-2">
+                <input x-model="wizardNewLocation" @keydown.enter.prevent="wizardAddLocation()" class="mc-input flex-1" placeholder="e.g. Remote, New York" />
+                <button @click="wizardAddLocation()" class="cmd-btn primary">Add</button>
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <template x-for="(loc, i) in wizardData.preferences.locations" :key="i">
+                  <span class="tag-chip"><span x-text="loc"></span><span class="remove" @click="wizardRemoveLocation(i)">&times;</span></span>
+                </template>
+              </div>
+            </div>
+
+            <!-- Skills -->
+            <div class="mb-5">
+              <label class="pref-label">Key Skills</label>
+              <div class="flex gap-2 mb-2">
+                <input x-model="wizardNewSkill" @keydown.enter.prevent="wizardAddSkill()" class="mc-input flex-1" placeholder="e.g. Python, React, AWS" />
+                <button @click="wizardAddSkill()" class="cmd-btn primary">Add</button>
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <template x-for="(skill, i) in wizardData.skills.primary" :key="i">
+                  <span class="tag-chip"><span x-text="skill"></span><span class="remove" @click="wizardRemoveSkill(i)">&times;</span></span>
+                </template>
+              </div>
+            </div>
+
+            <!-- Min Score Slider -->
+            <div>
+              <label class="pref-label">Minimum Match Score: <span x-text="wizardData.preferences.min_match_score" class="text-cyan-400"></span></label>
+              <input type="range" x-model.number="wizardData.preferences.min_match_score" min="30" max="95" step="5" class="w-full" />
+            </div>
+          </div>
+
+          <!-- Step 4: Review -->
+          <div x-show="wizardStep === 4">
+            <h2 class="text-lg font-semibold text-white mb-1">Review & Launch</h2>
+            <p class="text-[#64748b] text-xs mb-6" style="font-family: var(--font-mono);">Confirm your settings and start MR.Jobs</p>
+
+            <div class="space-y-4 text-sm">
+              <div class="p-3 rounded-lg bg-[#0a0e17] border border-[#1e293b]">
+                <span class="text-[#64748b] text-xs uppercase tracking-wider" style="font-family: var(--font-mono);">Identity</span>
+                <p class="text-white mt-1" x-text="(wizardData.personal.first_name + ' ' + wizardData.personal.last_name).trim() || 'Not set'"></p>
+                <p class="text-[#94a3b8]" x-text="wizardData.personal.email || 'No email'"></p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#0a0e17] border border-[#1e293b]">
+                <span class="text-[#64748b] text-xs uppercase tracking-wider" style="font-family: var(--font-mono);">Target Roles</span>
+                <p class="text-white mt-1" x-text="wizardData.preferences.roles.join(', ') || 'None set'"></p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#0a0e17] border border-[#1e293b]">
+                <span class="text-[#64748b] text-xs uppercase tracking-wider" style="font-family: var(--font-mono);">Skills</span>
+                <p class="text-white mt-1" x-text="wizardData.skills.primary.join(', ') || 'None set'"></p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#0a0e17] border border-[#1e293b]">
+                <span class="text-[#64748b] text-xs uppercase tracking-wider" style="font-family: var(--font-mono);">Locations</span>
+                <p class="text-white mt-1" x-text="wizardData.preferences.locations.join(', ') || 'None set'"></p>
+              </div>
+              <div class="p-3 rounded-lg bg-[#0a0e17] border border-[#1e293b]">
+                <span class="text-[#64748b] text-xs uppercase tracking-wider" style="font-family: var(--font-mono);">Min Score</span>
+                <p class="text-white mt-1" x-text="wizardData.preferences.min_match_score"></p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Navigation Buttons -->
+          <div class="flex justify-between mt-8 pt-4 border-t border-[#1e293b]">
+            <button @click="wizardBack()" x-show="wizardStep > 1" class="cmd-btn secondary">Back</button>
+            <div x-show="wizardStep === 1"></div>
+            <button x-show="wizardStep < 4" @click="wizardNext()" class="cmd-btn primary">Next</button>
+            <button x-show="wizardStep === 4" @click="wizardSubmit()" class="cmd-btn primary" style="background: rgba(16, 185, 129, 0.15); color: #10b981; border-color: rgba(16, 185, 129, 0.4);">
+              Launch MR.Jobs
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- ===================================================================
          COMMAND BAR
@@ -43,8 +244,8 @@
                         </svg>
                     </div>
                     <div>
-                        <h1 class="text-sm font-bold tracking-tight text-white" style="font-family:var(--font-display)">ORBITAL COMMAND</h1>
-                        <p class="text-[0.55rem] font-mono tracking-[0.15em] uppercase text-[#64748b] -mt-0.5">Auto-Apply Mission Control</p>
+                        <h1 class="text-sm font-bold tracking-tight text-white" style="font-family:var(--font-display)">MR.Jobs</h1>
+                        <p class="text-[0.55rem] font-mono tracking-[0.15em] uppercase text-[#64748b] -mt-0.5">Job Intelligence Dashboard</p>
                     </div>
                 </div>
 
@@ -88,7 +289,7 @@
                         </button>
                         <button @click="batchApply(false)" class="cmd-btn"
                                 style="background:rgba(16,185,129,0.2);color:#10b981;border-color:rgba(16,185,129,0.35);">
-                            > AUTO-APPLY
+                            > APPLY
                         </button>
                     </div>
                 </template>
@@ -100,6 +301,21 @@
                         <button @click="cancelApply()" class="cmd-btn"
                                 style="background:rgba(244,63,94,0.15);color:#f43f5e;border-color:rgba(244,63,94,0.3);">
                             CANCEL
+                        </button>
+                    </div>
+                </template>
+                <!-- PURGE + IGNORE controls -->
+                <template x-if="!discovering && !scoring && !applyState.running && !yoloState.running">
+                    <div class="flex items-center gap-1.5 ml-1 pl-2 border-l border-[#1e293b]">
+                        <button x-show="selectedJobs.length > 0" @click="ignoreSelected()"
+                                class="cmd-btn text-[0.6rem]"
+                                style="background:rgba(100,116,139,0.15);color:#94a3b8;border-color:rgba(100,116,139,0.3);">
+                            IGNORE (<span x-text="selectedJobs.length"></span>)
+                        </button>
+                        <button @click="confirmPurge()"
+                                class="cmd-btn text-[0.6rem]"
+                                style="background:rgba(244,63,94,0.1);color:#fb7185;border-color:rgba(244,63,94,0.2);">
+                            PURGE
                         </button>
                     </div>
                 </template>
@@ -271,6 +487,39 @@
             <!-- CENTER: Jobs Table (main content) -->
             <div class="lg:col-span-6 space-y-4">
 
+                <!-- ===================================================================
+                     ACTION REQUIRED — Follow-ups & Ghost Detection
+                ==================================================================== -->
+                <div x-show="followUps.overdue?.length || followUps.ghosts?.length" class="mc-panel">
+                  <div class="mc-panel-header">
+                    <div class="dot" style="background: var(--amber); box-shadow: 0 0 6px rgba(245,158,11,0.5);"></div>
+                    ACTION REQUIRED
+                    <span class="ml-auto text-amber-400" x-text="(followUps.overdue?.length || 0) + (followUps.ghosts?.length || 0) + ' items'"></span>
+                  </div>
+                  <div class="p-3 space-y-2">
+                    <!-- Overdue Follow-ups -->
+                    <template x-for="job in (followUps.overdue || [])" :key="'fu-' + job.id">
+                      <div class="flex items-center gap-3 p-2 rounded bg-amber-500/5 border border-amber-500/20">
+                        <span class="text-xs font-bold text-amber-400 uppercase tracking-wider px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20" style="font-family: var(--font-mono);">FOLLOW UP</span>
+                        <span class="text-sm text-white flex-1" x-text="job.title + ' @ ' + job.company"></span>
+                        <span class="text-xs text-[#64748b]" style="font-family: var(--font-mono);" x-text="'Follow-up #' + (job.follow_up_count || 0)"></span>
+                        <button @click="markFollowUpDone(job.id)" class="cmd-btn primary text-[0.55rem] py-0.5 px-2">Done +7d</button>
+                        <button @click="dismissFollowUp(job.id)" class="cmd-btn secondary text-[0.55rem] py-0.5 px-2">Dismiss</button>
+                      </div>
+                    </template>
+                    <!-- Ghost Alerts -->
+                    <template x-for="job in (followUps.ghosts || [])" :key="'gh-' + job.id">
+                      <div class="flex items-center gap-3 p-2 rounded bg-rose-500/5 border border-rose-500/20">
+                        <span class="text-xs font-bold text-rose-400 uppercase tracking-wider px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/20" style="font-family: var(--font-mono);">GHOST</span>
+                        <span class="text-sm text-white flex-1" x-text="job.title + ' @ ' + job.company"></span>
+                        <span class="text-xs text-[#64748b]" style="font-family: var(--font-mono);" x-text="'Applied ' + (job.applied_at ? new Date(job.applied_at).toLocaleDateString() : 'unknown')"></span>
+                        <button @click="markFollowUpDone(job.id)" class="cmd-btn primary text-[0.55rem] py-0.5 px-2">Follow Up</button>
+                        <button @click="changeStatus(job.id, 'rejected')" class="cmd-btn danger text-[0.55rem] py-0.5 px-2">Mark Rejected</button>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
                 <!-- Filters -->
                 <div class="mc-panel">
                     <div class="p-3 flex flex-wrap gap-3 items-end">
@@ -316,6 +565,11 @@
                     <table class="job-table">
                         <thead>
                             <tr>
+                                <th class="w-8">
+                                    <input type="checkbox" @change="toggleSelectAll($event)"
+                                           :checked="selectedJobs.length > 0 && selectedJobs.length === jobs.length"
+                                           class="accent-cyan-500 cursor-pointer" />
+                                </th>
                                 <th @click="toggleSort('match_score')" class="w-16">
                                     Score <span x-text="sortIcon('match_score')"></span>
                                 </th>
@@ -334,29 +588,44 @@
                         </thead>
                         <tbody>
                             <tr x-show="jobs.length === 0 && !loading">
-                                <td colspan="6" class="text-center py-12 text-[0.75rem] font-mono text-[#475569]">
+                                <td colspan="7" class="text-center py-12 text-[0.75rem] font-mono text-[#475569]">
                                     No targets acquired. Run <span class="text-cyan-400">DISCOVER</span> to begin scan.
                                 </td>
                             </tr>
                             <tr x-show="loading">
-                                <td colspan="6" class="text-center py-8 text-[0.75rem] font-mono text-[#475569] animate-pulse">
+                                <td colspan="7" class="text-center py-8 text-[0.75rem] font-mono text-[#475569] animate-pulse">
                                     Loading telemetry...
                                 </td>
                             </tr>
 
                             <template x-for="job in jobs" :key="job.id">
-                                <tr>
+                                <tr :class="selectedJobs.includes(job.id) ? 'bg-[#1a2235]' : ''">
+                                    <td>
+                                        <input type="checkbox" :value="job.id"
+                                               :checked="selectedJobs.includes(job.id)"
+                                               @change="toggleSelectJob(job.id)"
+                                               class="accent-cyan-500 cursor-pointer" />
+                                    </td>
                                     <td>
                                         <span class="score-badge" :class="scoreBadgeClass(job.match_score)"
                                               x-text="job.match_score != null ? job.match_score : '--'"></span>
                                     </td>
                                     <td>
-                                        <button @click="toggleExpand(job.id)" class="text-left w-full group">
-                                            <div class="text-sm font-medium text-[#e2e8f0] group-hover:text-cyan-400 transition-colors line-clamp-1"
-                                                 x-text="job.title"></div>
-                                            <div class="text-[0.62rem] font-mono text-[#475569] mt-0.5"
-                                                 x-text="job.platform || 'unknown'"></div>
-                                        </button>
+                                        <div class="flex items-center gap-2 group">
+                                            <button @click="toggleExpand(job.id)" class="text-left flex-1 min-w-0">
+                                                <div class="text-sm font-medium text-[#e2e8f0] group-hover:text-cyan-400 transition-colors line-clamp-1"
+                                                     x-text="job.title"></div>
+                                                <div class="text-[0.62rem] font-mono text-[#475569] mt-0.5"
+                                                     x-text="job.platform || 'unknown'"></div>
+                                            </button>
+                                            <a :href="job.url || job.apply_url" target="_blank" rel="noopener"
+                                               @click.stop class="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                                               title="Open in new tab">
+                                                <svg class="w-3.5 h-3.5 text-cyan-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                                                </svg>
+                                            </a>
+                                        </div>
                                     </td>
                                     <td class="text-[#94a3b8] whitespace-nowrap text-sm" x-text="job.company"></td>
                                     <td class="hidden md:table-cell text-[#64748b] text-xs whitespace-nowrap"
@@ -368,6 +637,8 @@
                                                 <option :value="s" x-text="s" :selected="s === job.status"></option>
                                             </template>
                                         </select>
+                                        <span x-show="isOverdue(job)" class="text-[0.55rem] font-bold text-amber-400 uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 ml-1" style="font-family: var(--font-mono);">FOLLOW UP</span>
+                                        <span x-show="isGhost(job)" class="text-[0.55rem] font-bold text-rose-400 uppercase tracking-wider px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 ml-1" style="font-family: var(--font-mono);">GHOST</span>
                                     </td>
                                     <td>
                                         <div class="flex items-center gap-1.5">
@@ -383,6 +654,12 @@
                                             <button @click="rescoreJob(job.id)"
                                                     class="text-[0.62rem] font-mono text-violet-400 hover:text-violet-300 transition-colors">AI</button>
                                             <span class="text-[#2a3a52]">|</span>
+                                            <button @click.stop="tailorJob(job.id)" :disabled="tailoring[job.id]"
+                                                    class="text-[0.62rem] font-mono text-violet-400 hover:text-violet-300 transition-colors disabled:opacity-30">
+                                                <span x-show="!tailoring[job.id]">TAILOR</span>
+                                                <span x-show="tailoring[job.id]">...</span>
+                                            </button>
+                                            <span class="text-[#2a3a52]">|</span>
                                             <button @click="confirmDeleteJob(job.id)"
                                                     class="text-[0.62rem] font-mono text-rose-500 hover:text-rose-300 transition-colors">DEL</button>
                                         </div>
@@ -397,7 +674,7 @@
                                     x-transition:enter-start="opacity-0"
                                     x-transition:enter-end="opacity-100"
                                     class="expanded-row">
-                                    <td colspan="6" class="p-5">
+                                    <td colspan="7" class="p-5">
                                         <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
                                             <!-- AI Reasoning -->
                                             <div>
@@ -428,6 +705,43 @@
                                                 <span x-show="job.applied_at">Applied: <span class="text-[#94a3b8]" x-text="formatDate(job.applied_at)"></span></span>
                                                 <span x-show="job.salary_min || job.salary_max">Salary: <span class="text-emerald-400" x-text="formatSalary(job.salary_min, job.salary_max)"></span></span>
                                                 <a x-show="job.apply_url" :href="job.apply_url" target="_blank" class="text-cyan-500 hover:text-cyan-300">Apply Link</a>
+                                            </div>
+
+                                            <!-- Tailored Resume Section -->
+                                            <div x-show="tailorData[job.id]" class="md:col-span-2 mt-4 p-3 rounded-lg bg-[#0a0e17] border border-violet-500/20">
+                                                <h4 class="text-xs font-semibold uppercase tracking-wider text-violet-400 mb-3" style="font-family: var(--font-mono);">Tailored Resume</h4>
+
+                                                <div x-show="tailorData[job.id]?.tailored_summary" class="mb-3">
+                                                    <p class="text-xs text-[#64748b] uppercase tracking-wider mb-1" style="font-family: var(--font-mono);">Summary</p>
+                                                    <p class="text-sm text-[#e2e8f0]" x-text="tailorData[job.id]?.tailored_summary"></p>
+                                                </div>
+
+                                                <div x-show="tailorData[job.id]?.tailored_bullets?.length" class="mb-3">
+                                                    <p class="text-xs text-[#64748b] uppercase tracking-wider mb-1" style="font-family: var(--font-mono);">Key Bullets</p>
+                                                    <ul class="space-y-1">
+                                                        <template x-for="bullet in (tailorData[job.id]?.tailored_bullets || [])" :key="bullet">
+                                                            <li class="text-sm text-[#e2e8f0] flex items-start gap-2">
+                                                                <span class="text-violet-400 mt-0.5">*</span>
+                                                                <span x-text="bullet"></span>
+                                                            </li>
+                                                        </template>
+                                                    </ul>
+                                                </div>
+
+                                                <div x-show="tailorData[job.id]?.keywords_to_include?.length" class="mb-3">
+                                                    <p class="text-xs text-[#64748b] uppercase tracking-wider mb-1" style="font-family: var(--font-mono);">Keywords to Include</p>
+                                                    <div class="flex flex-wrap gap-1">
+                                                        <template x-for="kw in (tailorData[job.id]?.keywords_to_include || [])" :key="kw">
+                                                            <span class="tag-chip text-violet-400 border-violet-500/30" x-text="kw"></span>
+                                                        </template>
+                                                    </div>
+                                                </div>
+
+                                                <div x-show="tailorData[job.id]?.tailored_cover_letter">
+                                                    <p class="text-xs text-[#64748b] uppercase tracking-wider mb-1" style="font-family: var(--font-mono);">Tailored Cover Letter</p>
+                                                    <p class="text-sm text-[#e2e8f0] whitespace-pre-wrap" x-text="tailorData[job.id]?.tailored_cover_letter"></p>
+                                                    <button @click="copyCoverLetter(tailorData[job.id]?.tailored_cover_letter)" class="text-[0.6rem] font-mono text-cyan-500 hover:text-cyan-300 mt-2">COPY</button>
+                                                </div>
                                             </div>
                                         </div>
                                     </td>
@@ -633,11 +947,100 @@
                 PROFILE CONFIGURATION
             </h2>
             <div class="flex items-center gap-3 text-[0.68rem] font-mono">
+                <button @click="scoreProfile()" :disabled="profileScoring"
+                        class="cmd-btn" style="background:rgba(139,92,246,0.15);color:#a78bfa;border-color:rgba(139,92,246,0.3);"
+                        x-text="profileScoring ? 'ANALYZING...' : 'AI PROFILE ANALYSIS'"></button>
                 <span x-show="profileSaving" class="text-cyan-400 animate-pulse">SAVING...</span>
                 <span x-show="!profileSaving && lastSaveTime" class="text-emerald-400">
                     SAVED <span x-text="lastSaveTime"></span>
                 </span>
                 <span class="text-[#475569]">Auto-saves on edit</span>
+            </div>
+        </div>
+
+        <!-- PROFILE INSIGHTS (AI Analysis) -->
+        <div x-show="profileInsights" x-transition class="mc-panel mb-5">
+            <div class="mc-panel-header flex items-center justify-between">
+                <span>
+                    <span class="dot" style="background:#a78bfa;box-shadow:0 0 6px rgba(139,92,246,0.5)"></span>
+                    AI PROFILE INSIGHTS
+                </span>
+                <div class="flex items-center gap-3">
+                    <span class="text-[0.68rem] font-mono" :class="(profileInsights?.profile_score || 0) >= 70 ? 'text-emerald-400' : (profileInsights?.profile_score || 0) >= 50 ? 'text-amber-400' : 'text-rose-400'">
+                        SCORE: <span x-text="profileInsights?.profile_score || '—'" class="font-bold"></span>/100
+                    </span>
+                    <button @click="profileInsights = null" class="text-[#64748b] hover:text-white text-sm">&times;</button>
+                </div>
+            </div>
+            <div class="p-4">
+                <!-- Summary -->
+                <p class="text-[0.78rem] text-[#94a3b8] leading-relaxed mb-4 font-mono"
+                   x-text="profileInsights?.summary || ''"></p>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <!-- Strengths -->
+                    <div>
+                        <div class="pref-label mb-2 text-emerald-400">Strengths</div>
+                        <ul class="space-y-1">
+                            <template x-for="s in (profileInsights?.strengths || [])" :key="s">
+                                <li class="text-[0.72rem] text-[#94a3b8] font-mono flex items-start gap-1.5">
+                                    <span class="text-emerald-400 mt-0.5 shrink-0">+</span>
+                                    <span x-text="s"></span>
+                                </li>
+                            </template>
+                        </ul>
+                    </div>
+                    <!-- Gaps -->
+                    <div>
+                        <div class="pref-label mb-2 text-amber-400">Gaps</div>
+                        <ul class="space-y-1">
+                            <template x-for="g in (profileInsights?.gaps || [])" :key="g">
+                                <li class="text-[0.72rem] text-[#94a3b8] font-mono flex items-start gap-1.5">
+                                    <span class="text-amber-400 mt-0.5 shrink-0">!</span>
+                                    <span x-text="g"></span>
+                                </li>
+                            </template>
+                        </ul>
+                    </div>
+                    <!-- Resume Suggestions -->
+                    <div>
+                        <div class="pref-label mb-2 text-cyan-400">Resume Suggestions</div>
+                        <ul class="space-y-1">
+                            <template x-for="r in (profileInsights?.resume_suggestions || [])" :key="r">
+                                <li class="text-[0.72rem] text-[#94a3b8] font-mono flex items-start gap-1.5">
+                                    <span class="text-cyan-400 mt-0.5 shrink-0">&rarr;</span>
+                                    <span x-text="r"></span>
+                                </li>
+                            </template>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Role Fit Rankings -->
+                <div x-show="profileInsights?.role_fit" class="mt-4 pt-4 border-t border-[#1e293b]">
+                    <div class="pref-label mb-2 text-violet-400">Role Fit Rankings</div>
+                    <div class="flex flex-wrap gap-3">
+                        <template x-for="[role, score] in Object.entries(profileInsights?.role_fit || {})" :key="role">
+                            <div class="flex items-center gap-2 text-[0.72rem] font-mono">
+                                <span class="text-[#94a3b8]" x-text="role"></span>
+                                <span class="score-badge px-2 py-0.5"
+                                      :class="score >= 70 ? 'high' : score >= 50 ? 'mid' : 'low'"
+                                      x-text="score"></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Keyword Recommendations -->
+                <div x-show="profileInsights?.keyword_recommendations?.length" class="mt-4 pt-4 border-t border-[#1e293b]">
+                    <div class="pref-label mb-2">Add These Keywords</div>
+                    <div class="flex flex-wrap gap-1.5">
+                        <template x-for="kw in (profileInsights?.keyword_recommendations || [])" :key="kw">
+                            <span class="text-[0.62rem] font-mono px-2 py-0.5 rounded bg-[#1e293b] text-cyan-400"
+                                  x-text="kw"></span>
+                        </template>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1227,7 +1630,7 @@
 
     <footer class="max-w-[1600px] mx-auto px-4 py-4 text-center">
         <p class="text-[0.55rem] font-mono tracking-[0.2em] uppercase text-[#334155]">
-            ORBITAL COMMAND v1.0 — Real-time telemetry via WebSocket
+            MR.Jobs v1.0 — Real-time telemetry via WebSocket
         </p>
     </footer>
 

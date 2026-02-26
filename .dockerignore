@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+.git
+*.db
+.cache
+resumes/
+profile.yaml
+.claude/
+.env
+logs/
+*.egg-info
+.mypy_cache
+.pytest_cache
+node_modules

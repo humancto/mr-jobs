@@ -1,10 +1,10 @@
 #!/bin/bash
-# Install Auto-Apply as a macOS LaunchAgent (runs on login, restarts on crash)
+# Install MR.Jobs as a macOS LaunchAgent (runs on login, restarts on crash)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PLIST_NAME="com.autoapply.dashboard"
+PLIST_NAME="com.mrjobs.dashboard"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_NAME}.plist"
 LOG_DIR="$SCRIPT_DIR/logs"
 PYTHON="python3.11"
@@ -16,7 +16,7 @@ fi
 
 mkdir -p "$LOG_DIR"
 
-echo "Installing Auto-Apply LaunchAgent..."
+echo "Installing MR.Jobs LaunchAgent..."
 echo "  Project: $SCRIPT_DIR"
 echo "  Python: $PYTHON"
 echo "  Logs: $LOG_DIR"
@@ -62,7 +62,7 @@ launchctl unload "$PLIST_PATH" 2>/dev/null || true
 launchctl load "$PLIST_PATH"
 
 echo ""
-echo "Auto-Apply installed and started!"
+echo "MR.Jobs installed and started!"
 echo "  Dashboard: http://localhost:8080"
 echo "  Logs: $LOG_DIR/server.log"
 echo "  To stop: bash $SCRIPT_DIR/service/uninstall.sh"

@@ -46,6 +46,10 @@ async def discover_greenhouse_jobs(company_slug: str, role_keywords: list[str]) 
     Scrape jobs from a Greenhouse board.
     URL pattern: https://boards.greenhouse.io/{company_slug}
     API pattern: https://boards-api.greenhouse.io/v1/boards/{company_slug}/jobs
+
+    NOTE: We do LOOSE filtering here — check title AND description against
+    role keywords AND skill keywords. The AI scoring engine makes the real
+    relevance decision later. Better to surface too many jobs than miss good ones.
     """
     import httpx
 
@@ -61,9 +65,24 @@ async def discover_greenhouse_jobs(company_slug: str, role_keywords: list[str]) 
         for job_data in data.get("jobs", []):
             title = job_data.get("title", "")
 
-            # Filter by role keywords
+            # Loose filter: check title AND description for any role or skill keyword
+            # This catches "SDE", "Software Developer", "Platform Eng" etc.
             title_lower = title.lower()
-            if not any(kw.lower() in title_lower for kw in role_keywords):
+            raw_desc = job_data.get("content", "")
+            desc_lower = re.sub(r'<[^>]+>', ' ', raw_desc).lower()
+            combined = f"{title_lower} {desc_lower}"
+
+            # Build broad keyword list: roles + any extra keywords from profile
+            broad_keywords = [kw.lower() for kw in role_keywords]
+            # Also match on common tech role stems
+            broad_keywords.extend([
+                "engineer", "developer", "architect", "sre", "devops",
+                "sde", "sse", "staff", "principal", "lead",
+            ])
+            # Deduplicate
+            broad_keywords = list(set(broad_keywords))
+
+            if not any(kw in combined for kw in broad_keywords):
                 continue
 
             location = job_data.get("location", {}).get("name", "Unknown")
@@ -102,6 +121,8 @@ async def discover_lever_jobs(company_slug: str, role_keywords: list[str]) -> li
     """
     Scrape jobs from a Lever board.
     API pattern: https://api.lever.co/v0/postings/{company_slug}
+
+    NOTE: Loose filtering — let the AI scoring decide relevance.
     """
     import httpx
 
@@ -117,9 +138,19 @@ async def discover_lever_jobs(company_slug: str, role_keywords: list[str]) -> li
         for posting in data:
             title = posting.get("text", "")
 
-            # Filter by role keywords
+            # Loose filter: check title AND description
             title_lower = title.lower()
-            if not any(kw.lower() in title_lower for kw in role_keywords):
+            desc_lower = posting.get("descriptionPlain", "").lower()
+            combined = f"{title_lower} {desc_lower}"
+
+            broad_keywords = [kw.lower() for kw in role_keywords]
+            broad_keywords.extend([
+                "engineer", "developer", "architect", "sre", "devops",
+                "sde", "sse", "staff", "principal", "lead",
+            ])
+            broad_keywords = list(set(broad_keywords))
+
+            if not any(kw in combined for kw in broad_keywords):
                 continue
 
             categories = posting.get("categories", {})

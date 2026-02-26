@@ -15,8 +15,14 @@ def discover_hn_jobs(profile: dict) -> list:
     from utils.discovery import Job
 
     role_keywords = [kw.lower() for kw in profile["preferences"]["roles"]]
-    skill_keywords = [kw.lower() for kw in profile["preferences"].get("keywords", [])]
-    all_keywords = role_keywords + skill_keywords
+    # Discovery uses ONLY role titles + generic stems — cast widest net
+    # Skills/keywords are used by AI scoring only, NOT for discovery filtering
+    all_keywords = list(set(
+        role_keywords +
+        ["engineer", "developer", "architect", "sre", "devops", "sde", "staff", "lead",
+         "software", "backend", "frontend", "fullstack", "platform", "infrastructure",
+         "data", "ml", "ai", "cloud", "security", "systems"]
+    ))
 
     all_jobs = []
 
@@ -57,9 +63,10 @@ def discover_hn_jobs(profile: dict) -> list:
             if not text:
                 continue
 
-            # Clean HTML
+            # Clean HTML and decode entities
+            import html as html_mod
             clean_text = re.sub(r'<[^>]+>', ' ', text)
-            clean_text = re.sub(r'&[a-zA-Z]+;', ' ', clean_text)
+            clean_text = html_mod.unescape(clean_text)  # &#x2F; -> /, &amp; -> &, etc.
             clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
             text_lower = clean_text.lower()
@@ -68,34 +75,39 @@ def discover_hn_jobs(profile: dict) -> list:
             if not any(kw in text_lower for kw in all_keywords):
                 continue
 
-            # Extract company name (usually the first line / first bold text)
-            company = "Unknown"
-            # Try to get company from first line (common format: "Company Name | Role | Location | ...")
-            first_line = clean_text.split('.')[0].split('|')[0].strip()
-            if len(first_line) < 60:
-                company = first_line
-
-            # Try to extract title from pipe-separated format
-            parts = clean_text.split('|')
+            # Extract company, title, location from pipe-separated format
+            # Common HN format: "Company Name | Role | Location | Remote | ..."
+            parts = [p.strip() for p in clean_text.split('|')]
+            company = parts[0][:80] if parts else "Unknown"
             title = "See posting"
             location = "See posting"
+
             if len(parts) >= 2:
-                company = parts[0].strip()[:60]
-                # Look for role-like parts
+                # Find the role-like part
+                role_keywords_match = ["engineer", "developer", "designer",
+                                       "manager", "lead", "senior", "junior",
+                                       "architect", "devops", "sre", "data",
+                                       "ml", "ai", "frontend", "backend",
+                                       "fullstack", "full-stack", "full stack",
+                                       "platform", "infrastructure", "security"]
+                location_keywords = ["remote", "onsite", "hybrid", "on-site",
+                                     "sf", "nyc", "la", "seattle", "austin",
+                                     "denver", "chicago", "london", "berlin",
+                                     "toronto", "new york", "san francisco",
+                                     "los angeles", "boston", "usa", "eu"]
+
                 for part in parts[1:]:
-                    part_stripped = part.strip()
-                    part_lower = part_stripped.lower()
-                    if any(kw in part_lower for kw in ["engineer", "developer", "designer",
-                                                        "manager", "lead", "senior", "junior",
-                                                        "architect", "devops", "sre", "data",
-                                                        "ml", "ai", "frontend", "backend",
-                                                        "fullstack", "full-stack", "full stack"]):
-                        title = part_stripped[:100]
-                    elif any(kw in part_lower for kw in ["remote", "onsite", "hybrid",
-                                                          "sf", "nyc", "la", "seattle",
-                                                          "austin", "denver", "chicago",
-                                                          "london", "berlin", "toronto"]):
-                        location = part_stripped[:100]
+                    part_lower = part.lower()
+                    # Skip parts that are URLs or very long
+                    if part.startswith("http") or len(part) > 120:
+                        continue
+                    if any(kw in part_lower for kw in role_keywords_match):
+                        title = part[:120]
+                    elif any(kw in part_lower for kw in location_keywords):
+                        location = part[:100]
+                    elif title == "See posting" and len(part) < 80:
+                        # If we haven't found a title yet, use the second part
+                        title = part[:120]
 
             comment_id = str(comment.get("id", ""))
             hn_url = f"https://news.ycombinator.com/item?id={comment_id}"

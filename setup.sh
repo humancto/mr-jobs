@@ -1,12 +1,12 @@
 #!/bin/bash
 # ============================================
-# Auto-Apply Setup Script
+# MR.Jobs Setup Script
 # ============================================
 
 set -e
 
-echo "🚀 Auto-Apply Setup"
-echo "==================="
+echo "🚀 MR.Jobs Setup"
+echo "================="
 echo ""
 
 # Check Python
@@ -30,7 +30,7 @@ if ! command -v claude &> /dev/null; then
     echo ""
     echo "📦 Installing Claude Code CLI..."
     npm install -g @anthropic-ai/claude-code
-    echo "⚠️  Run 'claude auth' to authenticate before using auto-apply."
+    echo "⚠️  Run 'claude auth' to authenticate before using MR.Jobs."
 else
     echo "✅ Claude CLI: $(claude --version 2>/dev/null || echo 'installed')"
 fi
