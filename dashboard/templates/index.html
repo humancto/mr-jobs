@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ORBITAL COMMAND — Auto-Apply</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              void: { DEFAULT: '#0a0e17', light: '#0f1420' },
+              panel: { DEFAULT: '#111827', light: '#1a2235', border: '#1e293b' },
+              phosphor: { DEFAULT: '#22d3ee', dim: 'rgba(34,211,238,0.15)' },
+            }
+          }
+        }
+      }
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script defer src="/static/app.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body x-data="missionControl()" x-init="init()" x-cloak>
+
+    <!-- ===================================================================
+         COMMAND BAR
+    ==================================================================== -->
+    <header class="sticky top-0 z-50 border-b border-[#1e293b] bg-[#0a0e17]/95 backdrop-blur-md">
+        <div class="max-w-[1600px] mx-auto px-4 py-2.5 flex items-center justify-between">
+            <!-- Left: Brand + Status -->
+            <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-7 h-7 rounded-md bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
+                        <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                    </div>
+                    <div>
+                        <h1 class="text-sm font-bold tracking-tight text-white" style="font-family:var(--font-display)">ORBITAL COMMAND</h1>
+                        <p class="text-[0.55rem] font-mono tracking-[0.15em] uppercase text-[#64748b] -mt-0.5">Auto-Apply Mission Control</p>
+                    </div>
+                </div>
+
+                <!-- Status indicators -->
+                <div class="hidden sm:flex items-center gap-4 ml-4 pl-4 border-l border-[#1e293b]">
+                    <div class="flex items-center gap-1.5">
+                        <span class="status-dot" :class="wsConnected ? 'live' : 'dead'"></span>
+                        <span class="text-[0.62rem] font-mono uppercase tracking-wider"
+                              :class="wsConnected ? 'text-emerald-400' : 'text-rose-400'"
+                              x-text="wsConnected ? 'LIVE' : 'OFFLINE'"></span>
+                    </div>
+                    <div class="flex items-center gap-1.5" x-show="schedulerData.running">
+                        <span class="status-dot idle"></span>
+                        <span class="text-[0.62rem] font-mono uppercase tracking-wider text-amber-400">SCHED</span>
+                    </div>
+                    <div class="flex items-center gap-1.5" x-show="discovering">
+                        <span class="status-dot live"></span>
+                        <span class="text-[0.62rem] font-mono uppercase tracking-wider text-cyan-400 animate-pulse">SCANNING</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Nav + Actions -->
+            <div class="flex items-center gap-2">
+                <div class="flex items-center gap-1 mr-3 pr-3 border-r border-[#1e293b]">
+                    <button @click="switchView('dashboard')" class="nav-tab"
+                            :class="currentView === 'dashboard' ? 'active' : ''">DASHBOARD</button>
+                    <button @click="switchView('profile')" class="nav-tab"
+                            :class="currentView === 'profile' ? 'active' : ''">PROFILE</button>
+                </div>
+                <button @click="scoreAll()" :disabled="scoring" class="cmd-btn secondary"
+                        x-text="scoring ? '> SCORING...' : '> SCORE ALL'"></button>
+                <button @click="discover()" :disabled="discovering" class="cmd-btn primary"
+                        x-text="discovering ? '> SCANNING...' : '> DISCOVER'"></button>
+                <!-- Apply controls -->
+                <template x-if="!applyState.running">
+                    <div class="flex items-center gap-1 ml-1 pl-2 border-l border-[#1e293b]">
+                        <button @click="batchApply(true)" class="cmd-btn"
+                                style="background:rgba(16,185,129,0.12);color:#34d399;border-color:rgba(16,185,129,0.25);">
+                            > DRY RUN
+                        </button>
+                        <button @click="batchApply(false)" class="cmd-btn"
+                                style="background:rgba(16,185,129,0.2);color:#10b981;border-color:rgba(16,185,129,0.35);">
+                            > AUTO-APPLY
+                        </button>
+                    </div>
+                </template>
+                <template x-if="applyState.running">
+                    <div class="flex items-center gap-2 ml-1 pl-2 border-l border-[#1e293b]">
+                        <span class="text-[0.62rem] font-mono text-emerald-400 animate-pulse">
+                            APPLYING <span x-text="applyState.progress.length"></span>/<span x-text="applyState.total || '?'"></span>
+                        </span>
+                        <button @click="cancelApply()" class="cmd-btn"
+                                style="background:rgba(244,63,94,0.15);color:#f43f5e;border-color:rgba(244,63,94,0.3);">
+                            CANCEL
+                        </button>
+                    </div>
+                </template>
+                <!-- YOLO controls -->
+                <template x-if="!yoloState.running && !applyState.running">
+                    <div class="ml-1 pl-2 border-l border-[#1e293b]">
+                        <button @click="startYolo()" class="cmd-btn yolo-btn">
+                            YOLO
+                        </button>
+                    </div>
+                </template>
+                <template x-if="yoloState.running">
+                    <div class="flex items-center gap-2 ml-1 pl-2 border-l border-[#1e293b]">
+                        <span class="text-[0.62rem] font-mono animate-pulse"
+                              :class="yoloState.phase === 'discover' ? 'text-cyan-400' : yoloState.phase === 'score' ? 'text-violet-400' : yoloState.phase === 'apply' ? 'text-emerald-400' : 'text-amber-400'">
+                            YOLO C<span x-text="yoloState.cycle"></span>:
+                            <span x-text="(yoloState.phase || 'init').toUpperCase()"></span>
+                        </span>
+                        <button @click="cancelYolo()" class="cmd-btn"
+                                style="background:rgba(244,63,94,0.15);color:#f43f5e;border-color:rgba(244,63,94,0.3);">
+                            ABORT
+                        </button>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </header>
+
+    <!-- YOLO Log Overlay -->
+    <div x-show="showYoloLog" x-transition
+         class="fixed inset-0 z-[60] flex items-center justify-center"
+         style="background:rgba(0,0,0,0.7);backdrop-filter:blur(4px)">
+        <div class="w-[700px] max-h-[80vh] mc-panel overflow-hidden flex flex-col"
+             @click.outside="showYoloLog = false">
+            <div class="mc-panel-header flex items-center justify-between">
+                <span>
+                    <span class="dot" style="background:#f59e0b;box-shadow:0 0 6px rgba(245,158,11,0.5)"></span>
+                    YOLO ACTION LOG
+                    <span class="ml-2 text-[0.55rem] text-[#64748b]" x-text="'Cycle ' + yoloState.cycle"></span>
+                </span>
+                <button @click="showYoloLog = false" class="text-[#64748b] hover:text-white text-sm">&times;</button>
+            </div>
+            <div class="flex-1 overflow-y-auto p-3 font-mono text-[0.68rem] leading-relaxed space-y-0.5 max-h-[60vh]">
+                <template x-for="(entry, idx) in yoloLog" :key="idx">
+                    <div class="flex gap-2"
+                         :class="entry.level === 'error' ? 'text-rose-400' : entry.level === 'warn' ? 'text-amber-400' : 'text-[#94a3b8]'">
+                        <span class="text-[#475569] shrink-0" x-text="entry.time?.split('T')[1]?.substring(0,8) || ''"></span>
+                        <span x-text="entry.msg"></span>
+                    </div>
+                </template>
+                <div x-show="yoloLog.length === 0" class="text-[#475569] italic">No log entries yet.</div>
+            </div>
+            <div class="p-3 border-t border-[#1e293b] flex items-center justify-between">
+                <span class="text-[0.6rem] font-mono text-[#475569]" x-text="yoloLog.length + ' entries'"></span>
+                <button @click="showYoloLog = false" class="cmd-btn secondary">CLOSE</button>
+            </div>
+        </div>
+    </div>
+
+    <main x-show="currentView === 'dashboard'" class="max-w-[1600px] mx-auto px-4 py-5 space-y-5">
+
+        <!-- =================================================================
+             NOTIFICATION TOAST
+        ================================================================= -->
+        <div x-show="notification" x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 translate-x-4"
+             x-transition:enter-end="opacity-100 translate-x-0"
+             x-transition:leave="transition ease-in duration-150"
+             class="fixed top-16 right-4 z-50 max-w-md">
+            <div class="toast" :class="notificationType">
+                <div class="flex items-center justify-between gap-3">
+                    <span x-text="notification"></span>
+                    <button @click="notification=''" class="opacity-60 hover:opacity-100">&times;</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- =================================================================
+             METRICS ROW
+        ================================================================= -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <template x-for="card in metricCards" :key="card.label">
+                <div class="metric-card">
+                    <div class="metric-value" :style="'color:' + card.color" x-text="card.value"></div>
+                    <div class="metric-label" x-text="card.label"></div>
+                    <div class="metric-bar" :style="'background:' + card.color"></div>
+                </div>
+            </template>
+        </div>
+
+        <!-- =================================================================
+             THREE-COLUMN COMMAND LAYOUT
+        ================================================================= -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+            <!-- LEFT: Activity Feed + Scheduler -->
+            <div class="lg:col-span-3 space-y-4">
+
+                <!-- Activity Feed -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header">
+                        <span class="dot"></span>
+                        ACTIVITY FEED
+                    </div>
+                    <div class="relative max-h-[260px] overflow-y-auto overflow-x-hidden">
+                        <div class="radar-sweep" x-show="discovering"></div>
+                        <template x-if="activityFeed.length === 0">
+                            <div class="text-center py-8 text-[0.7rem] font-mono text-[#475569]">
+                                Awaiting telemetry...
+                            </div>
+                        </template>
+                        <template x-for="(item, i) in activityFeed" :key="i">
+                            <div class="feed-item flex items-start gap-2"
+                                 :style="'border-left-color:' + item.color">
+                                <span class="feed-time" x-text="item.time"></span>
+                                <span :style="'color:' + item.color" x-text="item.msg"></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Scheduler Status -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header">
+                        <span class="dot" style="background:var(--amber);box-shadow:0 0 6px rgba(245,158,11,0.4)"></span>
+                        SCHEDULER
+                    </div>
+                    <div class="p-3 space-y-2">
+                        <template x-for="job in schedulerData.jobs" :key="job.id">
+                            <div class="flex items-center justify-between text-[0.7rem] font-mono py-1.5 border-b border-[#1e293b] last:border-0">
+                                <div>
+                                    <span class="text-[#94a3b8]" x-text="job.name"></span>
+                                </div>
+                                <div class="countdown" x-text="job.countdown || '--:--'"></div>
+                            </div>
+                        </template>
+                        <template x-if="!schedulerData.jobs || schedulerData.jobs.length === 0">
+                            <div class="text-center py-4 text-[0.65rem] font-mono text-[#475569]">
+                                No scheduled jobs
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Profile Insights (placeholder) -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header">
+                        <span class="dot" style="background:var(--violet);box-shadow:0 0 6px rgba(139,92,246,0.4)"></span>
+                        PROFILE INSIGHTS
+                    </div>
+                    <div class="p-4 text-[0.72rem] font-mono text-[#64748b] leading-relaxed">
+                        <div class="flex items-center gap-2 mb-3">
+                            <div class="w-12 h-12 rounded-lg bg-gradient-to-br from-violet-500/20 to-blue-500/20 border border-violet-500/20 flex items-center justify-center">
+                                <span class="text-2xl font-bold text-violet-400" x-text="'--'">--</span>
+                            </div>
+                            <div>
+                                <div class="text-[0.6rem] uppercase tracking-wider text-[#475569]">Profile Score</div>
+                                <div class="text-[#94a3b8] text-xs">Run scoring to analyze</div>
+                            </div>
+                        </div>
+                        <p class="text-[#475569] text-[0.65rem]">
+                            AI-powered profile analysis will appear here after scoring is triggered.
+                            Shows skill gaps, resume tips, and role fit rankings.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CENTER: Jobs Table (main content) -->
+            <div class="lg:col-span-6 space-y-4">
+
+                <!-- Filters -->
+                <div class="mc-panel">
+                    <div class="p-3 flex flex-wrap gap-3 items-end">
+                        <div class="min-w-[120px]">
+                            <label class="pref-label">Status</label>
+                            <select x-model="filters.status" @change="resetOffset(); fetchJobs()" class="mc-select w-full">
+                                <option value="">All</option>
+                                <template x-for="s in allStatuses" :key="s">
+                                    <option :value="s" x-text="s"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="min-w-[140px]">
+                            <label class="pref-label">Company</label>
+                            <select x-model="filters.company" @change="resetOffset(); fetchJobs()" class="mc-select w-full">
+                                <option value="">All</option>
+                                <template x-for="c in allCompanies" :key="c">
+                                    <option :value="c" x-text="c"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="w-20">
+                            <label class="pref-label">Min Score</label>
+                            <input type="number" x-model.number="filters.min_score"
+                                   @input.debounce.500ms="resetOffset(); fetchJobs()"
+                                   min="0" max="100" placeholder="0" class="mc-input" />
+                        </div>
+                        <div class="flex-1 min-w-[180px]">
+                            <label class="pref-label">Search</label>
+                            <input type="text" x-model="filters.search"
+                                   @input.debounce.400ms="resetOffset(); fetchJobs()"
+                                   placeholder="Title, company, location..." class="mc-input" />
+                        </div>
+                        <button @click="resetFilters()"
+                                class="text-[0.62rem] font-mono uppercase tracking-wider text-[#64748b] hover:text-cyan-400 transition-colors pb-2">
+                            RESET
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Jobs Table -->
+                <div class="mc-panel overflow-x-auto">
+                    <table class="job-table">
+                        <thead>
+                            <tr>
+                                <th @click="toggleSort('match_score')" class="w-16">
+                                    Score <span x-text="sortIcon('match_score')"></span>
+                                </th>
+                                <th @click="toggleSort('title')">
+                                    Title <span x-text="sortIcon('title')"></span>
+                                </th>
+                                <th @click="toggleSort('company')">
+                                    Company <span x-text="sortIcon('company')"></span>
+                                </th>
+                                <th class="hidden md:table-cell">Location</th>
+                                <th @click="toggleSort('status')" class="w-28">
+                                    Status <span x-text="sortIcon('status')"></span>
+                                </th>
+                                <th class="w-24">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr x-show="jobs.length === 0 && !loading">
+                                <td colspan="6" class="text-center py-12 text-[0.75rem] font-mono text-[#475569]">
+                                    No targets acquired. Run <span class="text-cyan-400">DISCOVER</span> to begin scan.
+                                </td>
+                            </tr>
+                            <tr x-show="loading">
+                                <td colspan="6" class="text-center py-8 text-[0.75rem] font-mono text-[#475569] animate-pulse">
+                                    Loading telemetry...
+                                </td>
+                            </tr>
+
+                            <template x-for="job in jobs" :key="job.id">
+                                <tr>
+                                    <td>
+                                        <span class="score-badge" :class="scoreBadgeClass(job.match_score)"
+                                              x-text="job.match_score != null ? job.match_score : '--'"></span>
+                                    </td>
+                                    <td>
+                                        <button @click="toggleExpand(job.id)" class="text-left w-full group">
+                                            <div class="text-sm font-medium text-[#e2e8f0] group-hover:text-cyan-400 transition-colors line-clamp-1"
+                                                 x-text="job.title"></div>
+                                            <div class="text-[0.62rem] font-mono text-[#475569] mt-0.5"
+                                                 x-text="job.platform || 'unknown'"></div>
+                                        </button>
+                                    </td>
+                                    <td class="text-[#94a3b8] whitespace-nowrap text-sm" x-text="job.company"></td>
+                                    <td class="hidden md:table-cell text-[#64748b] text-xs whitespace-nowrap"
+                                        x-text="job.location || '—'"></td>
+                                    <td>
+                                        <select :value="job.status" @change="changeStatus(job.id, $event.target.value)"
+                                                class="mc-select text-[0.62rem]" :class="statusSelectClass(job.status)">
+                                            <template x-for="s in allStatuses" :key="s">
+                                                <option :value="s" x-text="s" :selected="s === job.status"></option>
+                                            </template>
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <div class="flex items-center gap-1.5">
+                                            <button x-show="job.apply_url && job.status !== 'applied'"
+                                                    @click="applyToJob(job.id)"
+                                                    :disabled="applyState.running"
+                                                    class="text-[0.62rem] font-mono font-bold text-emerald-400 hover:text-emerald-300 transition-colors disabled:opacity-30"
+                                                    :class="applyState.job_id === job.id ? 'animate-pulse' : ''">APPLY</button>
+                                            <span x-show="job.apply_url && job.status !== 'applied'" class="text-[#2a3a52]">|</span>
+                                            <a :href="job.url || job.apply_url" target="_blank" rel="noopener"
+                                               class="text-[0.62rem] font-mono text-cyan-500 hover:text-cyan-300 transition-colors">VIEW</a>
+                                            <span class="text-[#2a3a52]">|</span>
+                                            <button @click="rescoreJob(job.id)"
+                                                    class="text-[0.62rem] font-mono text-violet-400 hover:text-violet-300 transition-colors">AI</button>
+                                            <span class="text-[#2a3a52]">|</span>
+                                            <button @click="confirmDeleteJob(job.id)"
+                                                    class="text-[0.62rem] font-mono text-rose-500 hover:text-rose-300 transition-colors">DEL</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+
+                            <!-- Expanded detail rows inserted via Alpine -->
+                            <template x-for="job in jobs" :key="'exp-'+job.id">
+                                <tr x-show="expandedJob === job.id"
+                                    x-transition:enter="transition ease-out duration-150"
+                                    x-transition:enter-start="opacity-0"
+                                    x-transition:enter-end="opacity-100"
+                                    class="expanded-row">
+                                    <td colspan="6" class="p-5">
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                            <!-- AI Reasoning -->
+                                            <div>
+                                                <div class="pref-label mb-2">AI Reasoning</div>
+                                                <p class="text-[0.78rem] text-[#94a3b8] leading-relaxed font-mono"
+                                                   x-text="job.reasoning || 'Not scored yet.'"></p>
+                                            </div>
+                                            <!-- Cover Letter -->
+                                            <div>
+                                                <div class="flex items-center justify-between mb-2">
+                                                    <span class="pref-label">Cover Letter</span>
+                                                    <button x-show="job.cover_letter" @click="copyCoverLetter(job.cover_letter)"
+                                                            class="text-[0.6rem] font-mono text-cyan-500 hover:text-cyan-300">COPY</button>
+                                                </div>
+                                                <p class="text-[0.78rem] text-[#94a3b8] whitespace-pre-wrap leading-relaxed max-h-44 overflow-y-auto font-mono"
+                                                   x-text="job.cover_letter || 'Not generated.'"></p>
+                                            </div>
+                                            <!-- Notes -->
+                                            <div class="md:col-span-2">
+                                                <div class="pref-label mb-2">Personal Notes</div>
+                                                <textarea x-model="jobNotes[job.id]" @blur="saveNotes(job.id)"
+                                                          rows="2" placeholder="Add mission notes..."
+                                                          class="mc-input resize-none"></textarea>
+                                            </div>
+                                            <!-- Metadata -->
+                                            <div class="md:col-span-2 flex flex-wrap gap-4 text-[0.62rem] font-mono text-[#475569] pt-2 border-t border-[#1e293b]">
+                                                <span>Discovered: <span class="text-[#94a3b8]" x-text="formatDate(job.discovered_at)"></span></span>
+                                                <span x-show="job.applied_at">Applied: <span class="text-[#94a3b8]" x-text="formatDate(job.applied_at)"></span></span>
+                                                <span x-show="job.salary_min || job.salary_max">Salary: <span class="text-emerald-400" x-text="formatSalary(job.salary_min, job.salary_max)"></span></span>
+                                                <a x-show="job.apply_url" :href="job.apply_url" target="_blank" class="text-cyan-500 hover:text-cyan-300">Apply Link</a>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination -->
+                <div class="flex items-center justify-between" x-show="totalJobs > 0">
+                    <p class="text-[0.7rem] font-mono text-[#64748b]">
+                        <span x-text="filters.offset + 1"></span>–<span x-text="Math.min(filters.offset + filters.limit, totalJobs)"></span>
+                        of <span class="text-[#94a3b8]" x-text="totalJobs"></span> targets
+                    </p>
+                    <div class="flex gap-2">
+                        <button @click="prevPage()" :disabled="filters.offset === 0"
+                                class="cmd-btn secondary text-[0.6rem] py-1.5 px-3">PREV</button>
+                        <button @click="nextPage()" :disabled="filters.offset + filters.limit >= totalJobs"
+                                class="cmd-btn secondary text-[0.6rem] py-1.5 px-3">NEXT</button>
+                    </div>
+                </div>
+
+                <!-- Charts -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="mc-panel">
+                        <div class="mc-panel-header">
+                            <span class="dot" style="background:var(--emerald);box-shadow:0 0 6px rgba(16,185,129,0.4)"></span>
+                            SCORE DISTRIBUTION
+                        </div>
+                        <div class="p-4">
+                            <canvas id="scoreChart" height="200"></canvas>
+                        </div>
+                    </div>
+                    <div class="mc-panel">
+                        <div class="mc-panel-header">
+                            <span class="dot" style="background:var(--blue);box-shadow:0 0 6px rgba(59,130,246,0.4)"></span>
+                            ACTIVITY TIMELINE
+                        </div>
+                        <div class="p-4">
+                            <canvas id="timelineChart" height="200"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT: Goals & Preferences -->
+            <div class="lg:col-span-3 space-y-4">
+
+                <!-- Goals Panel -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header">
+                        <span class="dot" style="background:var(--emerald);box-shadow:0 0 6px rgba(16,185,129,0.4)"></span>
+                        MISSION GOALS
+                        <span class="ml-auto text-[0.55rem] text-cyan-500 cursor-pointer hover:text-cyan-300"
+                              x-show="profileDirty" @click="saveProfile()">SAVE</span>
+                    </div>
+
+                    <!-- Target Roles -->
+                    <div class="pref-section">
+                        <span class="pref-label">Target Roles</span>
+                        <div class="flex flex-wrap gap-1.5 mb-2">
+                            <template x-for="(role, i) in profileEdit.roles" :key="'role-'+i">
+                                <span class="tag-chip">
+                                    <span x-text="role"></span>
+                                    <span class="remove" @click="removeItem('roles', i)">&times;</span>
+                                </span>
+                            </template>
+                        </div>
+                        <div class="flex gap-1.5">
+                            <input type="text" x-model="newRole" @keydown.enter.prevent="addItem('roles', 'newRole')"
+                                   placeholder="Add role..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                    </div>
+
+                    <!-- Locations -->
+                    <div class="pref-section">
+                        <span class="pref-label">Locations</span>
+                        <div class="flex flex-wrap gap-1.5 mb-2">
+                            <template x-for="(loc, i) in profileEdit.locations" :key="'loc-'+i">
+                                <span class="tag-chip">
+                                    <span x-text="loc"></span>
+                                    <span class="remove" @click="removeItem('locations', i)">&times;</span>
+                                </span>
+                            </template>
+                        </div>
+                        <div class="flex gap-1.5">
+                            <input type="text" x-model="newLocation" @keydown.enter.prevent="addItem('locations', 'newLocation')"
+                                   placeholder="Add location..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                    </div>
+
+                    <!-- Min Score -->
+                    <div class="pref-section">
+                        <span class="pref-label">Min Match Score</span>
+                        <div class="flex items-center gap-3">
+                            <input type="range" x-model.number="profileEdit.min_score" min="0" max="100" step="5"
+                                   @input="profileDirty = true"
+                                   class="flex-1 accent-cyan-500" />
+                            <span class="font-mono text-sm font-bold text-cyan-400 w-8 text-right"
+                                  x-text="profileEdit.min_score"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Skills Panel -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header">
+                        <span class="dot" style="background:var(--phosphor);box-shadow:0 0 6px var(--phosphor-glow)"></span>
+                        SKILLS MATRIX
+                        <span class="ml-auto text-[0.55rem] text-cyan-500 cursor-pointer hover:text-cyan-300"
+                              x-show="profileDirty" @click="saveProfile()">SAVE</span>
+                    </div>
+
+                    <!-- Primary Skills -->
+                    <div class="pref-section">
+                        <span class="pref-label">Primary</span>
+                        <div class="flex flex-wrap gap-1.5 mb-2">
+                            <template x-for="(skill, i) in profileEdit.primarySkills" :key="'ps-'+i">
+                                <span class="tag-chip" style="border-color:rgba(34,211,238,0.2);color:#22d3ee">
+                                    <span x-text="skill"></span>
+                                    <span class="remove" @click="removeItem('primarySkills', i)">&times;</span>
+                                </span>
+                            </template>
+                        </div>
+                        <input type="text" x-model="newPrimarySkill" @keydown.enter.prevent="addItem('primarySkills', 'newPrimarySkill')"
+                               placeholder="Add skill..." class="mc-input text-[0.68rem] py-1.5" />
+                    </div>
+
+                    <!-- Secondary Skills -->
+                    <div class="pref-section">
+                        <span class="pref-label">Secondary</span>
+                        <div class="flex flex-wrap gap-1.5 mb-2">
+                            <template x-for="(skill, i) in profileEdit.secondarySkills" :key="'ss-'+i">
+                                <span class="tag-chip">
+                                    <span x-text="skill"></span>
+                                    <span class="remove" @click="removeItem('secondarySkills', i)">&times;</span>
+                                </span>
+                            </template>
+                        </div>
+                        <input type="text" x-model="newSecondarySkill" @keydown.enter.prevent="addItem('secondarySkills', 'newSecondarySkill')"
+                               placeholder="Add skill..." class="mc-input text-[0.68rem] py-1.5" />
+                    </div>
+                </div>
+
+                <!-- Favorite Companies -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header">
+                        <span class="dot" style="background:var(--amber);box-shadow:0 0 6px rgba(245,158,11,0.4)"></span>
+                        PRIORITY TARGETS
+                        <span class="ml-auto text-[0.55rem] text-cyan-500 cursor-pointer hover:text-cyan-300"
+                              x-show="profileDirty" @click="saveProfile()">SAVE</span>
+                    </div>
+                    <div class="pref-section">
+                        <div class="flex flex-wrap gap-1.5 mb-2">
+                            <template x-for="(co, i) in profileEdit.favoriteCompanies" :key="'fav-'+i">
+                                <span class="tag-chip" style="border-color:rgba(245,158,11,0.2);color:#f59e0b">
+                                    <span x-text="co"></span>
+                                    <span class="remove" @click="removeItem('favoriteCompanies', i)">&times;</span>
+                                </span>
+                            </template>
+                        </div>
+                        <input type="text" x-model="newFavCompany" @keydown.enter.prevent="addItem('favoriteCompanies', 'newFavCompany')"
+                               placeholder="Add company..." class="mc-input text-[0.68rem] py-1.5" />
+                    </div>
+                </div>
+
+                <!-- Search Queries -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header">
+                        <span class="dot"></span>
+                        SEARCH QUERIES
+                        <span class="ml-auto text-[0.55rem] text-cyan-500 cursor-pointer hover:text-cyan-300"
+                              x-show="profileDirty" @click="saveProfile()">SAVE</span>
+                    </div>
+                    <div class="pref-section">
+                        <div class="flex flex-wrap gap-1.5 mb-2">
+                            <template x-for="(q, i) in profileEdit.searchQueries" :key="'sq-'+i">
+                                <span class="tag-chip">
+                                    <span x-text="q"></span>
+                                    <span class="remove" @click="removeItem('searchQueries', i)">&times;</span>
+                                </span>
+                            </template>
+                        </div>
+                        <input type="text" x-model="newSearchQuery" @keydown.enter.prevent="addItem('searchQueries', 'newSearchQuery')"
+                               placeholder="Add search query..." class="mc-input text-[0.68rem] py-1.5" />
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- end grid -->
+
+    </main>
+
+    <!-- ===================================================================
+         PROFILE EDITOR VIEW
+    ==================================================================== -->
+    <main x-show="currentView === 'profile'" x-transition class="max-w-[1600px] mx-auto px-4 py-5">
+
+        <!-- Save Status Bar -->
+        <div class="flex items-center justify-between mb-5">
+            <h2 class="text-lg font-bold tracking-tight" style="font-family:var(--font-display)">
+                PROFILE CONFIGURATION
+            </h2>
+            <div class="flex items-center gap-3 text-[0.68rem] font-mono">
+                <span x-show="profileSaving" class="text-cyan-400 animate-pulse">SAVING...</span>
+                <span x-show="!profileSaving && lastSaveTime" class="text-emerald-400">
+                    SAVED <span x-text="lastSaveTime"></span>
+                </span>
+                <span class="text-[#475569]">Auto-saves on edit</span>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+            <!-- ============== LEFT COLUMN ============== -->
+            <div class="space-y-4">
+
+                <!-- IDENTITY -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header cursor-pointer" @click="toggleSection('identity')">
+                        <span class="dot" style="background:var(--phosphor);box-shadow:0 0 6px var(--phosphor-glow)"></span>
+                        IDENTITY
+                        <span class="ml-auto text-[0.55rem]" x-text="profileSections.identity ? '\u25BC' : '\u25B6'"></span>
+                    </div>
+                    <div x-show="profileSections.identity" x-transition class="p-4 space-y-3">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">First Name</label>
+                                <input type="text" class="mc-input"
+                                       :value="fullProfile.personal?.first_name || ''"
+                                       @blur="updateProfileField('personal.first_name', $event.target.value)" />
+                            </div>
+                            <div>
+                                <label class="pref-label">Last Name</label>
+                                <input type="text" class="mc-input"
+                                       :value="fullProfile.personal?.last_name || ''"
+                                       @blur="updateProfileField('personal.last_name', $event.target.value)" />
+                            </div>
+                        </div>
+                        <div>
+                            <label class="pref-label">Email</label>
+                            <input type="email" class="mc-input"
+                                   :value="fullProfile.personal?.email || ''"
+                                   @blur="updateProfileField('personal.email', $event.target.value)" />
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">Phone</label>
+                                <input type="tel" class="mc-input"
+                                       :value="fullProfile.personal?.phone || ''"
+                                       @blur="updateProfileField('personal.phone', $event.target.value)" />
+                            </div>
+                            <div>
+                                <label class="pref-label">Location</label>
+                                <input type="text" class="mc-input"
+                                       :value="fullProfile.personal?.location || ''"
+                                       @blur="updateProfileField('personal.location', $event.target.value)" />
+                            </div>
+                        </div>
+                        <div>
+                            <label class="pref-label">LinkedIn</label>
+                            <input type="url" class="mc-input"
+                                   :value="fullProfile.personal?.linkedin || ''"
+                                   @blur="updateProfileField('personal.linkedin', $event.target.value)" />
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">GitHub</label>
+                                <input type="url" class="mc-input"
+                                       :value="fullProfile.personal?.github || ''"
+                                       @blur="updateProfileField('personal.github', $event.target.value)" />
+                            </div>
+                            <div>
+                                <label class="pref-label">Portfolio</label>
+                                <input type="url" class="mc-input"
+                                       :value="fullProfile.personal?.portfolio || ''"
+                                       @blur="updateProfileField('personal.portfolio', $event.target.value)" />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- WORK AUTHORIZATION -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header cursor-pointer" @click="toggleSection('workAuth')">
+                        <span class="dot" style="background:var(--emerald);box-shadow:0 0 6px rgba(16,185,129,0.4)"></span>
+                        WORK AUTHORIZATION
+                        <span class="ml-auto text-[0.55rem]" x-text="profileSections.workAuth ? '\u25BC' : '\u25B6'"></span>
+                    </div>
+                    <div x-show="profileSections.workAuth" x-transition class="p-4 space-y-3">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">Authorized to Work</label>
+                                <select class="mc-select w-full"
+                                        :value="fullProfile.common_answers?.authorized_to_work || 'Yes'"
+                                        @change="updateProfileField('common_answers.authorized_to_work', $event.target.value)">
+                                    <option>Yes</option>
+                                    <option>No</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="pref-label">Require Sponsorship</label>
+                                <select class="mc-select w-full"
+                                        :value="fullProfile.common_answers?.require_sponsorship || 'No'"
+                                        @change="updateProfileField('common_answers.require_sponsorship', $event.target.value)">
+                                    <option>No</option>
+                                    <option>Yes</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">Willing to Relocate</label>
+                                <input type="text" class="mc-input"
+                                       :value="fullProfile.common_answers?.willing_to_relocate || ''"
+                                       @blur="updateProfileField('common_answers.willing_to_relocate', $event.target.value)" />
+                            </div>
+                            <div>
+                                <label class="pref-label">Earliest Start Date</label>
+                                <input type="text" class="mc-input"
+                                       :value="fullProfile.common_answers?.earliest_start_date || ''"
+                                       @blur="updateProfileField('common_answers.earliest_start_date', $event.target.value)" />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- COMMON ANSWERS (EEO) -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header cursor-pointer" @click="toggleSection('commonAnswers')">
+                        <span class="dot" style="background:var(--amber);box-shadow:0 0 6px rgba(245,158,11,0.4)"></span>
+                        COMMON APPLICATION ANSWERS
+                        <span class="ml-auto text-[0.55rem]" x-text="profileSections.commonAnswers ? '\u25BC' : '\u25B6'"></span>
+                    </div>
+                    <div x-show="profileSections.commonAnswers" x-transition class="p-4 space-y-3">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">Salary Expectation</label>
+                                <input type="text" class="mc-input"
+                                       :value="fullProfile.common_answers?.salary_expectation || ''"
+                                       @blur="updateProfileField('common_answers.salary_expectation', $event.target.value)" />
+                            </div>
+                            <div>
+                                <label class="pref-label">Years of Experience</label>
+                                <input type="text" class="mc-input"
+                                       :value="fullProfile.common_answers?.years_experience || ''"
+                                       @blur="updateProfileField('common_answers.years_experience', $event.target.value)" />
+                            </div>
+                        </div>
+                        <div>
+                            <label class="pref-label">How Did You Hear About Us</label>
+                            <input type="text" class="mc-input"
+                                   :value="fullProfile.common_answers?.how_did_you_hear || ''"
+                                   @blur="updateProfileField('common_answers.how_did_you_hear', $event.target.value)" />
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">Gender</label>
+                                <select class="mc-select w-full"
+                                        :value="fullProfile.common_answers?.gender || 'Prefer not to say'"
+                                        @change="updateProfileField('common_answers.gender', $event.target.value)">
+                                    <option>Prefer not to say</option>
+                                    <option>Male</option>
+                                    <option>Female</option>
+                                    <option>Non-binary</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="pref-label">Race/Ethnicity</label>
+                                <select class="mc-select w-full"
+                                        :value="fullProfile.common_answers?.race_ethnicity || 'Prefer not to say'"
+                                        @change="updateProfileField('common_answers.race_ethnicity', $event.target.value)">
+                                    <option>Prefer not to say</option>
+                                    <option>White</option>
+                                    <option>Black or African American</option>
+                                    <option>Hispanic or Latino</option>
+                                    <option>Asian</option>
+                                    <option>Native American</option>
+                                    <option>Two or more races</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">Veteran Status</label>
+                                <select class="mc-select w-full"
+                                        :value="fullProfile.common_answers?.veteran_status || 'I am not a veteran'"
+                                        @change="updateProfileField('common_answers.veteran_status', $event.target.value)">
+                                    <option>I am not a veteran</option>
+                                    <option>I am a veteran</option>
+                                    <option>Prefer not to say</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="pref-label">Disability Status</label>
+                                <select class="mc-select w-full"
+                                        :value="fullProfile.common_answers?.disability_status || 'Prefer not to say'"
+                                        @change="updateProfileField('common_answers.disability_status', $event.target.value)">
+                                    <option>Prefer not to say</option>
+                                    <option>Yes, I have a disability</option>
+                                    <option>No, I do not have a disability</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SCHEDULE -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header cursor-pointer" @click="toggleSection('schedule')">
+                        <span class="dot" style="background:var(--amber);box-shadow:0 0 6px rgba(245,158,11,0.4)"></span>
+                        SCHEDULE
+                        <span class="ml-auto text-[0.55rem]" x-text="profileSections.schedule ? '\u25BC' : '\u25B6'"></span>
+                    </div>
+                    <div x-show="profileSections.schedule" x-transition class="p-4 space-y-3">
+                        <label class="pref-label flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox"
+                                   :checked="fullProfile.schedule?.enabled !== false"
+                                   @change="updateProfileField('schedule.enabled', $event.target.checked)" />
+                            Scheduler Enabled
+                        </label>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">Discovery Interval (hours)</label>
+                                <input type="number" class="mc-input"
+                                       :value="fullProfile.schedule?.discover_interval_hours || 6"
+                                       @blur="updateProfileField('schedule.discover_interval_hours', parseInt($event.target.value) || 6)" />
+                            </div>
+                            <div>
+                                <label class="pref-label">Score Interval (minutes)</label>
+                                <input type="number" class="mc-input"
+                                       :value="fullProfile.schedule?.score_interval_minutes || 30"
+                                       @blur="updateProfileField('schedule.score_interval_minutes', parseInt($event.target.value) || 30)" />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- ============== RIGHT COLUMN ============== -->
+            <div class="space-y-4">
+
+                <!-- RESUME MANAGEMENT -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header cursor-pointer" @click="toggleSection('resumes')">
+                        <span class="dot" style="background:var(--blue);box-shadow:0 0 6px rgba(59,130,246,0.4)"></span>
+                        RESUME MANAGEMENT
+                        <span class="ml-auto text-[0.55rem]" x-text="profileSections.resumes ? '\u25BC' : '\u25B6'"></span>
+                    </div>
+                    <div x-show="profileSections.resumes" x-transition class="p-4 space-y-3">
+                        <!-- Upload zone -->
+                        <div class="drop-zone" :class="resumeDragActive ? 'active' : ''"
+                             @dragover.prevent="resumeDragActive = true"
+                             @dragleave="resumeDragActive = false"
+                             @drop.prevent="handleResumeDrop($event)">
+                            <div class="text-[0.72rem] font-mono text-[#64748b] mb-3">
+                                Drop PDF here or click to select
+                            </div>
+                            <input type="file" accept=".pdf" class="hidden" x-ref="resumeFileInput" />
+                            <button @click="$refs.resumeFileInput.click()" class="cmd-btn primary text-[0.6rem] py-1.5 px-3">
+                                SELECT FILE
+                            </button>
+                            <div class="mt-3">
+                                <input type="text" x-model="newResumeName" placeholder='Name (e.g. "Backend Focus")'
+                                       class="mc-input text-[0.68rem] py-1.5 max-w-xs mx-auto" />
+                            </div>
+                            <button @click="uploadResume($refs.resumeFileInput)" :disabled="resumeUploading"
+                                    class="cmd-btn secondary text-[0.6rem] py-1.5 px-3 mt-2"
+                                    x-text="resumeUploading ? 'UPLOADING...' : 'UPLOAD'"></button>
+                        </div>
+
+                        <!-- Resume list -->
+                        <template x-for="(resume, i) in resumes" :key="resume.name">
+                            <div class="flex items-center justify-between p-3 border border-[#1e293b] rounded-lg">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 text-[0.6rem] font-mono font-bold">
+                                        PDF
+                                    </div>
+                                    <div>
+                                        <div class="text-sm text-[#e2e8f0] font-medium" x-text="resume.name"></div>
+                                        <div class="text-[0.6rem] font-mono text-[#475569]" x-text="resume.original_name"></div>
+                                    </div>
+                                    <span x-show="resume.is_default"
+                                          class="text-[0.55rem] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                        DEFAULT
+                                    </span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <button x-show="!resume.is_default" @click="setDefaultResume(resume.name)"
+                                            class="text-[0.6rem] font-mono text-cyan-500 hover:text-cyan-300">SET DEFAULT</button>
+                                    <button @click="deleteResume(resume.name)"
+                                            class="text-[0.6rem] font-mono text-rose-500 hover:text-rose-300">DELETE</button>
+                                </div>
+                            </div>
+                        </template>
+
+                        <template x-if="resumes.length === 0">
+                            <div class="text-center py-4 text-[0.65rem] font-mono text-[#475569]">
+                                No resumes uploaded yet. Upload your first PDF above.
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- COVER LETTER TEMPLATES -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header cursor-pointer" @click="toggleSection('coverLetters')">
+                        <span class="dot" style="background:var(--violet);box-shadow:0 0 6px rgba(139,92,246,0.4)"></span>
+                        COVER LETTER TEMPLATES
+                        <span class="ml-auto text-[0.55rem]" x-text="profileSections.coverLetters ? '\u25BC' : '\u25B6'"></span>
+                    </div>
+                    <div x-show="profileSections.coverLetters" x-transition class="p-4 space-y-3">
+                        <div class="text-[0.62rem] font-mono text-[#475569] mb-2">
+                            Placeholders: {company}, {role}, {skills}, {name} — Claude customizes per job
+                        </div>
+
+                        <!-- Existing templates -->
+                        <template x-for="(tpl, i) in coverLetterTemplates" :key="'tpl-'+i">
+                            <div class="border border-[#1e293b] rounded-lg p-3 space-y-2">
+                                <div class="flex items-center justify-between">
+                                    <input type="text" :value="tpl.name" class="mc-input text-[0.68rem] py-1 w-48"
+                                           @blur="updateCoverLetterTemplate(i, 'name', $event.target.value)" />
+                                    <button @click="removeCoverLetterTemplate(i)"
+                                            class="text-[0.6rem] font-mono text-rose-500 hover:text-rose-300">REMOVE</button>
+                                </div>
+                                <textarea :value="tpl.body" rows="5" class="mc-input text-[0.68rem] resize-y"
+                                          @blur="updateCoverLetterTemplate(i, 'body', $event.target.value)"></textarea>
+                            </div>
+                        </template>
+
+                        <!-- Add new template -->
+                        <div class="border border-dashed border-[#1e293b] rounded-lg p-3 space-y-2">
+                            <input type="text" x-model="newTemplateName" placeholder="Template name..."
+                                   class="mc-input text-[0.68rem] py-1.5" />
+                            <textarea x-model="newTemplateBody" rows="4" placeholder="Dear hiring team at {company}..."
+                                      class="mc-input text-[0.68rem] resize-y"></textarea>
+                            <button @click="addCoverLetterTemplate()" class="cmd-btn secondary text-[0.6rem] py-1.5 px-3">
+                                + ADD TEMPLATE
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- JOB PREFERENCES -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header cursor-pointer" @click="toggleSection('jobPrefs')">
+                        <span class="dot" style="background:var(--emerald);box-shadow:0 0 6px rgba(16,185,129,0.4)"></span>
+                        JOB PREFERENCES
+                        <span class="ml-auto text-[0.55rem]" x-text="profileSections.jobPrefs ? '\u25BC' : '\u25B6'"></span>
+                    </div>
+                    <div x-show="profileSections.jobPrefs" x-transition class="p-4 space-y-4">
+                        <!-- Min Score -->
+                        <div>
+                            <span class="pref-label">Min Match Score</span>
+                            <div class="flex items-center gap-3">
+                                <input type="range" min="0" max="100" step="5" class="flex-1"
+                                       :value="fullProfile.preferences?.min_match_score || 65"
+                                       @input="updateProfileField('preferences.min_match_score', parseInt($event.target.value))" />
+                                <span class="font-mono text-sm font-bold text-cyan-400 w-8 text-right"
+                                      x-text="fullProfile.preferences?.min_match_score || 65"></span>
+                            </div>
+                        </div>
+                        <!-- Remote Only -->
+                        <label class="pref-label flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox"
+                                   :checked="fullProfile.preferences?.remote_only === true"
+                                   @change="updateProfileField('preferences.remote_only', $event.target.checked)" />
+                            Remote Only
+                        </label>
+                        <!-- Roles -->
+                        <div>
+                            <span class="pref-label">Target Roles</span>
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <template x-for="(item, i) in getProfileArray('preferences.roles')" :key="'pr-'+i">
+                                    <span class="tag-chip">
+                                        <span x-text="item"></span>
+                                        <span class="remove" @click="removeProfileArrayItem('preferences.roles', i)">&times;</span>
+                                    </span>
+                                </template>
+                            </div>
+                            <input type="text" x-model="newRole" @keydown.enter.prevent="addProfileArrayItem('preferences.roles', 'newRole')"
+                                   placeholder="Add role..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                        <!-- Keywords -->
+                        <div>
+                            <span class="pref-label">Keywords</span>
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <template x-for="(item, i) in getProfileArray('preferences.keywords')" :key="'pk-'+i">
+                                    <span class="tag-chip">
+                                        <span x-text="item"></span>
+                                        <span class="remove" @click="removeProfileArrayItem('preferences.keywords', i)">&times;</span>
+                                    </span>
+                                </template>
+                            </div>
+                            <input type="text" x-ref="newKeyword"
+                                   @keydown.enter.prevent="
+                                       let v=$refs.newKeyword.value.trim();
+                                       if(v){addProfileArrayItem('preferences.keywords','_kw');$refs.newKeyword.value=''}
+                                   "
+                                   placeholder="Add keyword..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                        <!-- Locations -->
+                        <div>
+                            <span class="pref-label">Preferred Locations</span>
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <template x-for="(item, i) in getProfileArray('preferences.locations')" :key="'pl-'+i">
+                                    <span class="tag-chip">
+                                        <span x-text="item"></span>
+                                        <span class="remove" @click="removeProfileArrayItem('preferences.locations', i)">&times;</span>
+                                    </span>
+                                </template>
+                            </div>
+                            <input type="text" x-model="newLocation" @keydown.enter.prevent="addProfileArrayItem('preferences.locations', 'newLocation')"
+                                   placeholder="Add location..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                        <!-- Exclude Companies -->
+                        <div>
+                            <span class="pref-label">Exclude Companies</span>
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <template x-for="(item, i) in getProfileArray('preferences.exclude_companies')" :key="'pe-'+i">
+                                    <span class="tag-chip" style="border-color:rgba(244,63,94,0.2);color:#f43f5e">
+                                        <span x-text="item"></span>
+                                        <span class="remove" @click="removeProfileArrayItem('preferences.exclude_companies', i)">&times;</span>
+                                    </span>
+                                </template>
+                            </div>
+                            <input type="text" x-ref="newExclude"
+                                   @keydown.enter.prevent="
+                                       let v=$refs.newExclude.value.trim();
+                                       if(v){
+                                           let keys='preferences.exclude_companies'.split('.');
+                                           let obj=fullProfile;
+                                           for(let i=0;i<keys.length-1;i++){if(!obj[keys[i]])obj[keys[i]]={};obj=obj[keys[i]];}
+                                           let k=keys[keys.length-1];
+                                           if(!Array.isArray(obj[k]))obj[k]=[];
+                                           if(!obj[k].includes(v)){obj[k].push(v);scheduleProfileSave();}
+                                           $refs.newExclude.value='';
+                                       }
+                                   "
+                                   placeholder="Add company..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                        <!-- Ideal Job Description -->
+                        <div>
+                            <span class="pref-label">Ideal Job Description</span>
+                            <textarea rows="3" class="mc-input text-[0.68rem] resize-y"
+                                      :value="fullProfile.ideal_job_description || ''"
+                                      @blur="updateProfileField('ideal_job_description', $event.target.value)"
+                                      placeholder="Describe your ideal role for AI matching..."></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TARGET BOARDS -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header cursor-pointer" @click="toggleSection('targets')">
+                        <span class="dot" style="background:var(--amber);box-shadow:0 0 6px rgba(245,158,11,0.4)"></span>
+                        TARGET BOARDS + FAVORITES
+                        <span class="ml-auto text-[0.55rem]" x-text="profileSections.targets ? '\u25BC' : '\u25B6'"></span>
+                    </div>
+                    <div x-show="profileSections.targets" x-transition class="p-4 space-y-4">
+                        <!-- Favorite Companies -->
+                        <div>
+                            <span class="pref-label">Favorite Companies (+10 score boost)</span>
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <template x-for="(item, i) in getProfileArray('favorite_companies')" :key="'fc-'+i">
+                                    <span class="tag-chip" style="border-color:rgba(245,158,11,0.2);color:#f59e0b">
+                                        <span x-text="item"></span>
+                                        <span class="remove" @click="removeProfileArrayItem('favorite_companies', i)">&times;</span>
+                                    </span>
+                                </template>
+                            </div>
+                            <input type="text" x-model="newFavCompany" @keydown.enter.prevent="addProfileArrayItem('favorite_companies', 'newFavCompany')"
+                                   placeholder="Add company..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                        <!-- Greenhouse Slugs -->
+                        <div>
+                            <span class="pref-label">Greenhouse Board Slugs</span>
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <template x-for="(item, i) in getProfileArray('target_boards.greenhouse')" :key="'gh-'+i">
+                                    <span class="tag-chip" style="border-color:rgba(16,185,129,0.2);color:#10b981">
+                                        <span x-text="item"></span>
+                                        <span class="remove" @click="removeProfileArrayItem('target_boards.greenhouse', i)">&times;</span>
+                                    </span>
+                                </template>
+                            </div>
+                            <input type="text" x-ref="newGhSlug"
+                                   @keydown.enter.prevent="
+                                       let v=$refs.newGhSlug.value.trim();
+                                       if(v){
+                                           let arr=fullProfile.target_boards?.greenhouse;
+                                           if(!arr){if(!fullProfile.target_boards)fullProfile.target_boards={};fullProfile.target_boards.greenhouse=[];arr=fullProfile.target_boards.greenhouse;}
+                                           if(!arr.includes(v)){arr.push(v);scheduleProfileSave();}
+                                           $refs.newGhSlug.value='';
+                                       }
+                                   "
+                                   placeholder="company-slug..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                        <!-- Lever Slugs -->
+                        <div>
+                            <span class="pref-label">Lever Board Slugs</span>
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <template x-for="(item, i) in getProfileArray('target_boards.lever')" :key="'lv-'+i">
+                                    <span class="tag-chip" style="border-color:rgba(59,130,246,0.2);color:#3b82f6">
+                                        <span x-text="item"></span>
+                                        <span class="remove" @click="removeProfileArrayItem('target_boards.lever', i)">&times;</span>
+                                    </span>
+                                </template>
+                            </div>
+                            <input type="text" x-ref="newLvSlug"
+                                   @keydown.enter.prevent="
+                                       let v=$refs.newLvSlug.value.trim();
+                                       if(v){
+                                           let arr=fullProfile.target_boards?.lever;
+                                           if(!arr){if(!fullProfile.target_boards)fullProfile.target_boards={};fullProfile.target_boards.lever=[];arr=fullProfile.target_boards.lever;}
+                                           if(!arr.includes(v)){arr.push(v);scheduleProfileSave();}
+                                           $refs.newLvSlug.value='';
+                                       }
+                                   "
+                                   placeholder="company-slug..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SEARCH CONFIG -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header cursor-pointer" @click="toggleSection('searchConfig')">
+                        <span class="dot"></span>
+                        SEARCH CONFIGURATION
+                        <span class="ml-auto text-[0.55rem]" x-text="profileSections.searchConfig ? '\u25BC' : '\u25B6'"></span>
+                    </div>
+                    <div x-show="profileSections.searchConfig" x-transition class="p-4 space-y-3">
+                        <label class="pref-label flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox"
+                                   :checked="fullProfile.search?.enabled !== false"
+                                   @change="updateProfileField('search.enabled', $event.target.checked)" />
+                            Search Enabled
+                        </label>
+                        <div>
+                            <span class="pref-label">Search Queries</span>
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <template x-for="(item, i) in getProfileArray('search.queries')" :key="'sq-'+i">
+                                    <span class="tag-chip">
+                                        <span x-text="item"></span>
+                                        <span class="remove" @click="removeProfileArrayItem('search.queries', i)">&times;</span>
+                                    </span>
+                                </template>
+                            </div>
+                            <input type="text" x-model="newSearchQuery" @keydown.enter.prevent="addProfileArrayItem('search.queries', 'newSearchQuery')"
+                                   placeholder="Add query..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="pref-label">Distance (miles)</label>
+                                <input type="number" class="mc-input"
+                                       :value="fullProfile.search?.distance_miles || 50"
+                                       @blur="updateProfileField('search.distance_miles', parseInt($event.target.value) || 50)" />
+                            </div>
+                            <div>
+                                <label class="pref-label">Results Per Query</label>
+                                <input type="number" class="mc-input"
+                                       :value="fullProfile.search?.results_per_query || 25"
+                                       @blur="updateProfileField('search.results_per_query', parseInt($event.target.value) || 25)" />
+                            </div>
+                        </div>
+                        <!-- Search Locations -->
+                        <div>
+                            <span class="pref-label">Search Locations</span>
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <template x-for="(item, i) in getProfileArray('search.locations')" :key="'sloc-'+i">
+                                    <span class="tag-chip">
+                                        <span x-text="item"></span>
+                                        <span class="remove" @click="removeProfileArrayItem('search.locations', i)">&times;</span>
+                                    </span>
+                                </template>
+                            </div>
+                            <input type="text" x-ref="newSearchLoc"
+                                   @keydown.enter.prevent="
+                                       let v=$refs.newSearchLoc.value.trim();
+                                       if(v){
+                                           let arr=fullProfile.search?.locations;
+                                           if(!arr){if(!fullProfile.search)fullProfile.search={};fullProfile.search.locations=[];arr=fullProfile.search.locations;}
+                                           if(!arr.includes(v)){arr.push(v);scheduleProfileSave();}
+                                           $refs.newSearchLoc.value='';
+                                       }
+                                   "
+                                   placeholder="Add location..." class="mc-input text-[0.68rem] py-1.5" />
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- end right column -->
+
+        </div><!-- end grid -->
+    </main>
+
+    <footer class="max-w-[1600px] mx-auto px-4 py-4 text-center">
+        <p class="text-[0.55rem] font-mono tracking-[0.2em] uppercase text-[#334155]">
+            ORBITAL COMMAND v1.0 — Real-time telemetry via WebSocket
+        </p>
+    </footer>
+
+
+</body>
+</html>

@@ -1,0 +1,95 @@
+personal:
+  first_name: Your
+  last_name: Name
+  email: you@example.com
+  phone: +1-555-000-0000
+  location: San Francisco, CA
+  linkedin: https://linkedin.com/in/yourprofile
+  github: https://github.com/yourusername
+  portfolio: https://yoursite.com
+resume_path: ./resume.pdf
+preferences:
+  roles:
+  - Software Engineer
+  - Backend Engineer
+  - Full Stack Engineer
+  - Platform Engineer
+  keywords:
+  - Python
+  - Rust
+  - distributed systems
+  - AI
+  min_match_score: 65
+  remote_only: false
+  locations:
+  - San Francisco
+  - Remote
+  exclude_companies:
+  - ExampleBadCorp
+common_answers:
+  authorized_to_work: 'Yes'
+  require_sponsorship: 'No'
+  years_experience: '5'
+  willing_to_relocate: Open to discussion
+  salary_expectation: Open to discuss based on total compensation
+  earliest_start_date: 2 weeks notice
+  how_did_you_hear: Online job board
+  gender: Prefer not to say
+  race_ethnicity: Prefer not to say
+  veteran_status: I am not a veteran
+  disability_status: Prefer not to say
+target_boards:
+  greenhouse:
+  - anthropic
+  - stripe
+  - figma
+  - vercel
+  - datadog
+  lever:
+  - anyscale
+search:
+  enabled: true
+  queries:
+  - Software Engineer
+  - Backend Engineer
+  locations:
+  - San Francisco, CA
+  - Remote
+  distance_miles: 50
+  results_per_query: 25
+  salary_min: 0
+skills:
+  primary:
+  - Python
+  - Rust
+  - Go
+  - distributed systems
+  secondary:
+  - Kubernetes
+  - Docker
+  - AWS
+  - PostgreSQL
+  - React
+ideal_job_description: 'A senior backend or platform engineering role at a technology
+  company building distributed systems, developer tools, or AI infrastructure. Strong
+  engineering culture, remote-friendly, competitive compensation.'
+favorite_companies:
+- anthropic
+- stripe
+- figma
+- vercel
+custom_career_pages: []
+rate_limits:
+  max_applications_per_day: 25
+  min_delay_seconds: 60
+  max_delay_seconds: 180
+schedule:
+  discover_interval_hours: 6
+  score_interval_minutes: 30
+  enabled: true
+email:
+  enabled: false
+  imap_server: imap.gmail.com
+  email: ''
+  app_password: ''
+  check_interval_hours: 12
