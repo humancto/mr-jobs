@@ -38,8 +38,7 @@ from utils.tracker import (
     log_applied, log_skipped, get_today_count, print_stats,
     reset_unscored, delete_all, get_unscored_jobs
 )
-from adapters.greenhouse import apply_greenhouse
-from adapters.generic import apply_generic
+from adapters.stagehand_adapter import apply_smart
 
 
 def load_profile(path: str = "profile.yaml") -> dict:
@@ -219,17 +218,11 @@ async def cmd_apply(profile: dict, dry_run: bool = True):
             try:
                 cover_letter = result.get("cover_letter", "")
 
-                if job.platform == "greenhouse":
-                    success = await apply_greenhouse(
-                        page, job.apply_url, profile, brain,
-                        cover_letter=cover_letter, dry_run=dry_run
-                    )
-                else:
-                    # Generic AI-driven form filler for Lever and others
-                    success = await apply_generic(
-                        page, job.apply_url, profile, brain,
-                        cover_letter=cover_letter, dry_run=dry_run
-                    )
+                success = await apply_smart(
+                    page, job.apply_url, profile, brain,
+                    cover_letter=cover_letter, dry_run=dry_run,
+                    platform=job.platform
+                )
 
                 if not dry_run:
                     log_applied(job.id, success)
@@ -265,13 +258,7 @@ async def cmd_single(profile: dict, url: str, dry_run: bool = True):
         )
         page = await context.new_page()
 
-        # Detect platform
-        if "greenhouse.io" in url:
-            print("  🌿 Detected: Greenhouse")
-            await apply_greenhouse(page, url, profile, brain, dry_run=dry_run)
-        else:
-            print("  🤖 Using generic AI form filler")
-            await apply_generic(page, url, profile, brain, dry_run=dry_run)
+        await apply_smart(page, url, profile, brain, dry_run=dry_run)
 
         if dry_run:
             print("\n💡 Browser staying open for review. Press Ctrl+C to exit.")

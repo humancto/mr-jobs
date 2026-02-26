@@ -816,8 +816,7 @@ async def apply_single_job(job_id: str, body: dict = {}) -> dict:
             import yaml
             from playwright.async_api import async_playwright
             from utils.brain import ClaudeBrain
-            from adapters.greenhouse import apply_greenhouse
-            from adapters.generic import apply_generic
+            from adapters.stagehand_adapter import apply_smart
             from utils.tracker import log_applied
 
             profile_path = BASE_DIR.parent / "profile.yaml"
@@ -852,16 +851,11 @@ async def apply_single_job(job_id: str, body: dict = {}) -> dict:
                 platform = job.get("platform", "")
                 apply_url = job["apply_url"]
 
-                if "greenhouse" in platform or "greenhouse.io" in apply_url:
-                    success = await apply_greenhouse(
-                        page, apply_url, profile, brain,
-                        cover_letter=cover_letter, dry_run=dry_run,
-                    )
-                else:
-                    success = await apply_generic(
-                        page, apply_url, profile, brain,
-                        cover_letter=cover_letter, dry_run=dry_run,
-                    )
+                success = await apply_smart(
+                    page, apply_url, profile, brain,
+                    cover_letter=cover_letter, dry_run=dry_run,
+                    platform=platform,
+                )
 
                 if not dry_run:
                     log_applied(job_id, success)
@@ -950,8 +944,7 @@ async def apply_batch(body: dict = {}) -> dict:
         try:
             from playwright.async_api import async_playwright
             from utils.brain import ClaudeBrain
-            from adapters.greenhouse import apply_greenhouse
-            from adapters.generic import apply_generic
+            from adapters.stagehand_adapter import apply_smart
             from utils.tracker import log_applied
 
             brain = ClaudeBrain(verbose=False, profile=profile)
@@ -1004,16 +997,11 @@ async def apply_batch(body: dict = {}) -> dict:
                         platform = job.get("platform", "")
                         apply_url = job["apply_url"]
 
-                        if "greenhouse" in platform or "greenhouse.io" in apply_url:
-                            success = await apply_greenhouse(
-                                page, apply_url, profile, brain,
-                                cover_letter=cover_letter, dry_run=dry_run,
-                            )
-                        else:
-                            success = await apply_generic(
-                                page, apply_url, profile, brain,
-                                cover_letter=cover_letter, dry_run=dry_run,
-                            )
+                        success = await apply_smart(
+                            page, apply_url, profile, brain,
+                            cover_letter=cover_letter, dry_run=dry_run,
+                            platform=platform,
+                        )
 
                         if not dry_run:
                             log_applied(job_id, success)
@@ -1250,8 +1238,7 @@ async def start_yolo(body: dict = {}) -> dict:
 
                 try:
                     from playwright.async_api import async_playwright
-                    from adapters.greenhouse import apply_greenhouse
-                    from adapters.generic import apply_generic
+                    from adapters.stagehand_adapter import apply_smart
                     from utils.tracker import log_applied, get_today_count
 
                     rate_limits = profile.get("rate_limits", {})
@@ -1312,16 +1299,11 @@ async def start_yolo(body: dict = {}) -> dict:
                                     platform = job.get("platform", "")
                                     apply_url = job["apply_url"]
 
-                                    if "greenhouse" in platform or "greenhouse.io" in apply_url:
-                                        success = await apply_greenhouse(
-                                            page, apply_url, profile, brain,
-                                            cover_letter=cover_letter, dry_run=dry_run,
-                                        )
-                                    else:
-                                        success = await apply_generic(
-                                            page, apply_url, profile, brain,
-                                            cover_letter=cover_letter, dry_run=dry_run,
-                                        )
+                                    success = await apply_smart(
+                                        page, apply_url, profile, brain,
+                                        cover_letter=cover_letter, dry_run=dry_run,
+                                        platform=platform,
+                                    )
 
                                     if not dry_run:
                                         log_applied(job_id, success)
