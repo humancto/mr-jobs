@@ -388,23 +388,6 @@ Examples:
     # rescore
     subparsers.add_parser("rescore", help="Re-score all unscored jobs")
 
-    # interview
-    interview_parser = subparsers.add_parser("interview", help="Start a mock interview session")
-    interview_parser.add_argument("--mode", choices=["text", "voice", "video"], default="text",
-                                   help="Interview mode (default: text)")
-    interview_parser.add_argument("--role", default=None, help="Job title (e.g. 'Software Engineer')")
-    interview_parser.add_argument("--company", default=None, help="Company name")
-    interview_parser.add_argument("--type", dest="type", default="mixed",
-                                   choices=["behavioral", "technical", "system_design", "mixed"],
-                                   help="Interview type (default: mixed)")
-    interview_parser.add_argument("--difficulty", default="mid",
-                                   choices=["junior", "mid", "senior", "staff"],
-                                   help="Difficulty level (default: mid)")
-    interview_parser.add_argument("--duration", type=int, default=30,
-                                   help="Target duration in minutes (default: 30)")
-    interview_parser.add_argument("--job-id", default=None, help="Pull context from tracked job")
-    interview_parser.add_argument("--output", default=None, help="Save evaluation to file")
-
     # server
     server_parser = subparsers.add_parser("server", help="Launch web dashboard")
     server_parser.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
@@ -432,10 +415,6 @@ Examples:
         asyncio.run(cmd_single(profile, args.url, dry_run=dry_run))
     elif args.command == "rescore":
         asyncio.run(cmd_rescore(profile))
-    elif args.command == "interview":
-        brain = ClaudeBrain(verbose=True, profile=profile)
-        from interviewer.cli import cmd_interview
-        asyncio.run(cmd_interview(args, profile, brain))
     elif args.command == "server":
         from dashboard.server import run_server
         try:

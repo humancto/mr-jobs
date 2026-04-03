@@ -120,4 +120,3 @@ ai:
     form_analysis: claude_cli
     email_classification: claude_cli
     profile_analysis: claude_cli
-    interview: gemini
