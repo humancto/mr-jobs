@@ -112,6 +112,34 @@ def discover_hn_jobs(profile: dict) -> list:
             comment_id = str(comment.get("id", ""))
             hn_url = f"https://news.ycombinator.com/item?id={comment_id}"
 
+            # Extract apply URL from comment text (no browser needed)
+            apply_url = hn_url
+            apply_email = None
+            urls_in_text = re.findall(r'https?://[^\s<>"\')\],;]+', clean_text)
+            urls_in_text = [u.rstrip(".,;:!?)") for u in urls_in_text if len(u) > 10]
+
+            # Prefer ATS URLs, then careers/jobs URLs, then any URL
+            ats_domains = ["greenhouse.io", "lever.co", "ashbyhq.com",
+                           "myworkdayjobs.com", "smartrecruiters.com",
+                           "jobvite.com", "icims.com"]
+            for url in urls_in_text:
+                if any(d in url.lower() for d in ats_domains):
+                    apply_url = url
+                    break
+            else:
+                for url in urls_in_text:
+                    if any(kw in url.lower() for kw in ["careers", "jobs", "apply", "hiring"]):
+                        apply_url = url
+                        break
+                else:
+                    if urls_in_text:
+                        apply_url = urls_in_text[0]
+
+            # Extract email for jobs that require email application
+            email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', clean_text)
+            if email_match:
+                apply_email = email_match.group(0)
+
             job_id = hashlib.md5(hn_url.encode()).hexdigest()[:16]
 
             job = Job(
@@ -120,7 +148,7 @@ def discover_hn_jobs(profile: dict) -> list:
                 company=company,
                 location=location,
                 url=hn_url,
-                apply_url=hn_url,
+                apply_url=apply_url,
                 platform="hackernews",
                 description=clean_text[:5000],
                 department="",
@@ -128,6 +156,7 @@ def discover_hn_jobs(profile: dict) -> list:
                     "source": "hackernews",
                     "thread_title": thread_title,
                     "date_posted": comment.get("created_at", ""),
+                    "apply_email": apply_email,
                 }
             )
             all_jobs.append(job)

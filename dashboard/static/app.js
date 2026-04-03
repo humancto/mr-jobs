@@ -29,6 +29,8 @@ function mrjobs() {
     ws: null,
     wsConnected: false,
     _pingTimer: null,
+    _wsReconnectDelay: 1000,
+    _wsReconnecting: false,
 
     // ----- Activity Feed -----
     activityFeed: [],
@@ -40,6 +42,9 @@ function mrjobs() {
     _countdownTimer: null,
 
     // ----- Profile Editing -----
+    _sidebarSaveTimer: null,
+    sidebarSaving: false,
+    sidebarSaved: false,
     profileDirty: false,
     profileEdit: {
       roles: [],
@@ -52,6 +57,7 @@ function mrjobs() {
     },
     newRole: "",
     newLocation: "",
+    newKeyword: "",
     newPrimarySkill: "",
     newSecondarySkill: "",
     newFavCompany: "",
@@ -106,6 +112,49 @@ function mrjobs() {
     newTemplateName: "",
     newTemplateBody: "",
 
+    // ----- Interview Practice -----
+    interviewModal: false,
+    interviewSession: null, // { session_id, job_title, company, type, provider, mode }
+    interviewMessages: [], // [{ role: 'interviewer'|'candidate', text }]
+    interviewInput: "",
+    interviewSending: false,
+    interviewEnded: false,
+    interviewEvaluating: false,
+    interviewEvaluation: null, // formatted evaluation summary
+    interviewHistory: [], // past sessions from DB
+    interviewHistoryOpen: false,
+    interviewConfig: {
+      role: "Software Engineer",
+      company: "Tech Company",
+      type: "mixed",
+      difficulty: "mid",
+      duration: 30,
+      provider: "gemini",
+      mode: "text", // text | voice | video
+    },
+    availableProviders: {}, // { gemini: { available, label }, openai: { ... } }
+
+    // ----- Voice/Video Interview -----
+    interviewAudioWs: null, // WebSocket for audio streaming
+    interviewMicActive: false, // mic recording toggle
+    interviewMicStream: null, // MediaStream from getUserMedia
+    interviewAudioContext: null, // AudioContext for processing
+    geminiAudioNextTime: 0, // scheduled time for next audio chunk playback
+    interviewVoiceStatus: "idle", // idle | listening | thinking | speaking
+    interviewVideoStream: null, // MediaStream for webcam
+    interviewMediaRecorder: null, // MediaRecorder for session recording
+    interviewRecordedChunks: [], // WebM blobs
+    interviewWebcamActive: false,
+    interviewFrameTimer: null, // setInterval for frame capture
+
+    // ----- Gemini Live Streaming -----
+    geminiLiveWs: null, // WebSocket for Gemini Live real-time streaming
+    geminiLiveActive: false, // whether Gemini Live mode is currently active
+
+    // ----- OpenAI Realtime Streaming -----
+    openaiLiveWs: null, // WebSocket for OpenAI Realtime audio streaming
+    openaiLiveActive: false, // whether OpenAI Realtime mode is currently active
+
     // ----- Section Collapse State -----
     profileSections: {
       identity: true,
@@ -126,6 +175,7 @@ function mrjobs() {
     // ----- Charts -----
     scoreChart: null,
     timelineChart: null,
+    _radarChart: null,
 
     // ----- Setup Wizard -----
     needsSetup: false,
@@ -165,12 +215,10 @@ function mrjobs() {
 
     get metricCards() {
       const s = this.stats;
-      const total =
-        (s.discovered || 0) +
-        (s.matched || 0) +
-        (s.applied || 0) +
-        (s.skipped || 0) +
-        (s.failed || 0);
+      const total = Object.values(s).reduce(
+        (sum, v) => sum + (typeof v === "number" ? v : 0),
+        0,
+      );
       return [
         { label: "Total Jobs", value: total, color: "#e2e8f0" },
         { label: "Matched", value: s.matched || 0, color: "#10b981" },
@@ -401,6 +449,7 @@ function mrjobs() {
       if (!this.profileEdit[field].includes(val)) {
         this.profileEdit[field].push(val);
         this.profileDirty = true;
+        this.debouncedSaveProfile();
       }
       this[inputField] = "";
     },
@@ -408,9 +457,17 @@ function mrjobs() {
     removeItem(field, index) {
       this.profileEdit[field].splice(index, 1);
       this.profileDirty = true;
+      this.debouncedSaveProfile();
+    },
+
+    debouncedSaveProfile() {
+      if (this._sidebarSaveTimer) clearTimeout(this._sidebarSaveTimer);
+      this._sidebarSaveTimer = setTimeout(() => this.saveProfile(), 1500);
     },
 
     async saveProfile() {
+      this.sidebarSaving = true;
+      this.sidebarSaved = false;
       try {
         const body = {
           preferences: {
@@ -435,10 +492,16 @@ function mrjobs() {
         });
 
         this.profileDirty = false;
-        this.notify("Mission parameters updated.", "success");
+        this.sidebarSaved = true;
         this.addFeedItem("Profile configuration saved.", "#10b981");
+        // Clear "Saved" indicator after 3s
+        setTimeout(() => {
+          this.sidebarSaved = false;
+        }, 3000);
       } catch (err) {
         this.notify(`Profile save failed: ${err.message}`, "error");
+      } finally {
+        this.sidebarSaving = false;
       }
     },
 
@@ -448,6 +511,9 @@ function mrjobs() {
 
     async discover() {
       this.discovering = true;
+      setTimeout(() => {
+        this.discovering = false;
+      }, 120000);
       this.notify("Discovery scan initiated...", "info");
       this.addFeedItem(
         "Discovery scan initiated. Searching all sources...",
@@ -463,6 +529,9 @@ function mrjobs() {
 
     async scoreAll() {
       this.scoring = true;
+      setTimeout(() => {
+        this.scoring = false;
+      }, 120000);
       this.notify("Scoring all unscored targets...", "info");
       this.addFeedItem("AI scoring initiated for unscored jobs.", "#8b5cf6");
       try {
@@ -1036,22 +1105,39 @@ function mrjobs() {
     // ===================================================================
 
     connectWebSocket() {
+      if (this._wsReconnecting) return;
+      this._wsReconnecting = true;
+
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       this.ws = new WebSocket(`${proto}//${location.host}/ws`);
 
       this.ws.onopen = () => {
         this.wsConnected = true;
+        this._wsReconnectDelay = 1000;
+        this._wsReconnecting = false;
         this.addFeedItem("WebSocket link established.", "#10b981");
+        // If we reconnected during an active interview, poll to recover state
+        if (this.interviewSession && !this.interviewEnded) {
+          this._pollInterviewState();
+        }
       };
 
       this.ws.onclose = () => {
         this.wsConnected = false;
-        this.addFeedItem("WebSocket disconnected. Reconnecting...", "#f43f5e");
-        setTimeout(() => this.connectWebSocket(), 3000);
+        this._wsReconnecting = false;
+        // Exponential backoff: 1s, 2s, 4s, 8s, max 15s
+        const delay = this._wsReconnectDelay || 1000;
+        this._wsReconnectDelay = Math.min(delay * 2, 15000);
+        this.addFeedItem(
+          `WebSocket disconnected. Reconnecting in ${Math.round(delay / 1000)}s...`,
+          "#f43f5e",
+        );
+        setTimeout(() => this.connectWebSocket(), delay);
       };
 
       this.ws.onerror = () => {
         this.wsConnected = false;
+        this._wsReconnecting = false;
       };
 
       this.ws.onmessage = (e) => {
@@ -1413,6 +1499,68 @@ function mrjobs() {
         case "follow_up_done":
           this.fetchFollowUps();
           break;
+
+        // ----- Interview Events -----
+        case "interview_started":
+          this.interviewSending = false;
+          this.interviewMessages.push({
+            role: "interviewer",
+            text: event.data.opening,
+          });
+          this.addFeedItem(
+            `Interview started: ${event.data.job_title} @ ${event.data.company}`,
+            "#8b5cf6",
+          );
+          this.$nextTick(() => this.scrollInterviewChat());
+          break;
+
+        case "interview_response":
+          this.interviewSending = false;
+          this.interviewMessages.push({
+            role: "interviewer",
+            text: event.data.response,
+          });
+          if (event.data.should_end) {
+            this.interviewEnded = true;
+          }
+          this.$nextTick(() => this.scrollInterviewChat());
+          break;
+
+        case "interview_evaluating":
+          this.interviewEvaluating = true;
+          this.addFeedItem("AI evaluating interview performance...", "#a78bfa");
+          break;
+
+        case "interview_complete":
+          this.interviewEvaluating = false;
+          this.interviewEnded = true;
+          if (
+            event.data.evaluation &&
+            event.data.evaluation.has_evaluation !== undefined
+          ) {
+            this.interviewEvaluation = event.data.evaluation;
+          } else if (event.data.evaluation) {
+            this.interviewEvaluation = this._buildEvalObj(
+              event.data.evaluation,
+            );
+          }
+          this.notify("Interview evaluation complete!", "success");
+          this.addFeedItem(
+            `Interview score: ${event.data.evaluation?.overall_score || "?"}/5`,
+            "#10b981",
+          );
+          this.$nextTick(() => {
+            this.scrollInterviewChat();
+            this.renderRadarChart();
+          });
+          break;
+
+        case "interview_error":
+          this.interviewSending = false;
+          this.interviewEvaluating = false;
+          this.notify(`Interview error: ${event.data.error}`, "error");
+          this.addFeedItem(`Interview error: ${event.data.error}`, "#f43f5e");
+          break;
       }
     },
 
@@ -1759,6 +1907,1382 @@ function mrjobs() {
         },
       });
     },
+
+    // ===================================================================
+    // INTERVIEW PRACTICE
+    // ===================================================================
+
+    async fetchProviders() {
+      try {
+        const res = await fetch("/api/providers");
+        const data = await res.json();
+        this.availableProviders = data.providers || {};
+        // Set smart default: prefer Gemini (live streaming), then OpenAI
+        if (this.availableProviders.gemini?.available) {
+          this.interviewConfig.provider = "gemini";
+        } else if (this.availableProviders.openai?.available) {
+          this.interviewConfig.provider = "openai";
+        }
+      } catch {
+        this.availableProviders = {};
+      }
+    },
+
+    openInterviewModal(jobId = null) {
+      // Reset state
+      this.interviewMessages = [];
+      this.interviewInput = "";
+      this.interviewSending = false;
+      this.interviewEnded = false;
+      this.interviewEvaluating = false;
+      this.interviewEvaluation = null;
+      this.interviewSession = null;
+      this.interviewMicActive = false;
+      this.interviewWebcamActive = false;
+      this.interviewVoiceStatus = "idle";
+      this.interviewRecordedChunks = [];
+      if (this.geminiLiveActive) {
+        this.stopGeminiLiveMode();
+      }
+      if (this.openaiLiveActive) {
+        this.stopOpenAILiveMode();
+      }
+      this.geminiLiveWs = null;
+      this.geminiLiveActive = false;
+      this.openaiLiveWs = null;
+      this.openaiLiveActive = false;
+
+      // If job context provided, pre-fill config
+      if (jobId) {
+        const job = this.jobs.find((j) => j.id === jobId);
+        if (job) {
+          this.interviewConfig.role = job.title || "Software Engineer";
+          this.interviewConfig.company = job.company || "Tech Company";
+        }
+      }
+
+      this.fetchProviders();
+      this.interviewModal = true;
+    },
+
+    closeInterviewModal() {
+      this.interviewModal = false;
+      this.stopInterviewMedia();
+      if (this.interviewSession && !this.interviewEnded) {
+        fetch("/api/interview/end", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: this.interviewSession.session_id,
+          }),
+        }).catch(() => {});
+      }
+    },
+
+    stopInterviewMedia() {
+      // Stop Gemini Live mode if active
+      if (this.geminiLiveActive) {
+        this.stopGeminiLiveMode();
+      }
+      // Stop OpenAI Realtime mode if active
+      if (this.openaiLiveActive) {
+        this.stopOpenAILiveMode();
+      }
+      // Stop mic
+      if (this.interviewMicStream) {
+        this.interviewMicStream.getTracks().forEach((t) => t.stop());
+        this.interviewMicStream = null;
+      }
+      // Stop webcam
+      if (this.interviewVideoStream) {
+        this.interviewVideoStream.getTracks().forEach((t) => t.stop());
+        this.interviewVideoStream = null;
+      }
+      // Stop media recorder
+      if (
+        this.interviewMediaRecorder &&
+        this.interviewMediaRecorder.state !== "inactive"
+      ) {
+        this.interviewMediaRecorder.stop();
+      }
+      // Stop frame capture
+      if (this.interviewFrameTimer) {
+        clearInterval(this.interviewFrameTimer);
+        this.interviewFrameTimer = null;
+      }
+      // Close audio WS
+      if (this.interviewAudioWs) {
+        this.interviewAudioWs.close();
+        this.interviewAudioWs = null;
+      }
+      // Close audio context
+      if (this.interviewAudioContext) {
+        this.interviewAudioContext.close().catch(() => {});
+        this.interviewAudioContext = null;
+      }
+      this.interviewMicActive = false;
+      this.interviewWebcamActive = false;
+    },
+
+    async startInterview(jobId = null) {
+      this.interviewMessages = [];
+      this.interviewEnded = false;
+      this.interviewEvaluation = null;
+      this.interviewSending = true;
+
+      // Voice requires Gemini or OpenAI; Video requires Gemini only
+      let effectiveMode = this.interviewConfig.mode;
+      if (
+        effectiveMode === "video" &&
+        this.interviewConfig.provider !== "gemini"
+      ) {
+        effectiveMode = "voice"; // OpenAI can do voice but not video
+        this.interviewConfig.mode = "voice";
+        this.notify(
+          "Video mode requires Gemini. Using voice mode instead.",
+          "warning",
+        );
+      }
+      if (
+        (effectiveMode === "voice" || effectiveMode === "video") &&
+        !["gemini", "openai"].includes(this.interviewConfig.provider)
+      ) {
+        effectiveMode = "text";
+        this.interviewConfig.mode = "text";
+        this.notify(
+          "Live audio requires Gemini or OpenAI. Falling back to text mode.",
+          "warning",
+        );
+      }
+
+      const payload = {
+        role: this.interviewConfig.role,
+        company: this.interviewConfig.company,
+        type: this.interviewConfig.type,
+        difficulty: this.interviewConfig.difficulty,
+        duration: this.interviewConfig.duration,
+        provider: this.interviewConfig.provider,
+        mode: effectiveMode,
+      };
+      if (jobId) payload.job_id = jobId;
+
+      try {
+        const res = await fetch("/api/interview/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        this.interviewSession = {
+          session_id: data.session_id,
+          job_title: payload.role,
+          company: payload.company,
+          type: payload.type,
+          provider: payload.provider,
+          mode: payload.mode,
+        };
+
+        // Start voice/video modes after session is created
+        if (payload.mode === "voice" || payload.mode === "video") {
+          if (payload.provider === "gemini") {
+            // Gemini Live: real-time streaming (voice + video)
+            await this.startGeminiLiveMode(
+              data.session_id,
+              payload.mode === "video",
+            );
+          } else if (payload.provider === "openai") {
+            // OpenAI Realtime: live audio phone call (voice only)
+            await this.startOpenAILiveMode(data.session_id);
+          }
+        }
+
+        this.addFeedItem(
+          `Interview started: ${payload.role} @ ${payload.company}`,
+          "#8b5cf6",
+        );
+      } catch (err) {
+        this.notify(`Interview start failed: ${err.message}`, "error");
+        this.interviewSending = false;
+      }
+    },
+
+    async sendInterviewResponse() {
+      const text = this.interviewInput.trim();
+      if (!text || !this.interviewSession || this.interviewSending) return;
+
+      this.interviewMessages.push({ role: "candidate", text });
+      this.interviewInput = "";
+      this.interviewSending = true;
+
+      try {
+        await fetch("/api/interview/respond", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: this.interviewSession.session_id,
+            text,
+          }),
+        });
+      } catch (err) {
+        this.notify(`Response failed: ${err.message}`, "error");
+        this.interviewSending = false;
+      }
+
+      // Scroll chat to bottom
+      this.$nextTick(() => this.scrollInterviewChat());
+    },
+
+    async endInterview() {
+      if (!this.interviewSession) return;
+      this.interviewEvaluating = true;
+
+      // Stop media streams
+      this.stopInterviewMedia();
+
+      // Upload recording if we have one
+      if (this.interviewRecordedChunks.length > 0) {
+        await this.uploadRecording(this.interviewSession.session_id);
+      }
+
+      try {
+        await fetch("/api/interview/end", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: this.interviewSession.session_id,
+          }),
+        });
+      } catch (err) {
+        this.notify(`End interview failed: ${err.message}`, "error");
+        this.interviewEvaluating = false;
+      }
+    },
+
+    scrollInterviewChat() {
+      const chat = document.getElementById("interview-chat");
+      if (chat) chat.scrollTop = chat.scrollHeight;
+    },
+
+    async _pollInterviewState() {
+      // Polling fallback: recover interview state after WebSocket reconnection
+      if (!this.interviewSession) return;
+      const sid = this.interviewSession.session_id;
+      try {
+        const res = await fetch(`/api/interview/state/${sid}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.found) return;
+
+        // Sync transcript — only add messages we don't already have
+        const serverMessages = (data.transcript || []).map((t) => ({
+          role: t.role === "interviewer" ? "interviewer" : "candidate",
+          text: t.text,
+        }));
+        if (serverMessages.length > this.interviewMessages.length) {
+          this.interviewMessages = serverMessages;
+          this.$nextTick(() => this.scrollInterviewChat());
+        }
+
+        // If evaluation arrived while we were disconnected
+        if (data.evaluation && !data.evaluation.error) {
+          this.interviewEvaluating = false;
+          this.interviewEnded = true;
+          // Re-format if needed (server may return raw evaluation)
+          if (data.evaluation.has_evaluation !== undefined) {
+            this.interviewEvaluation = data.evaluation;
+          } else {
+            const e = data.evaluation;
+            this.interviewEvaluation = this._buildEvalObj(e);
+          }
+        }
+
+        // Update sending state
+        if (data.state === "active") {
+          this.interviewSending = false;
+        } else if (data.state === "ended" || data.state === "evaluated") {
+          this.interviewSending = false;
+          this.interviewEnded = true;
+        }
+      } catch (_) {
+        // Polling is best-effort
+      }
+    },
+
+    async fetchInterviewHistory() {
+      try {
+        const res = await fetch("/api/interview/sessions");
+        this.interviewHistory = await res.json();
+      } catch (err) {
+        this.interviewHistory = [];
+      }
+    },
+
+    async viewPastInterview(sessionId) {
+      try {
+        const res = await fetch(`/api/interview/sessions/${sessionId}`);
+        const data = await res.json();
+
+        // Load into modal as read-only
+        this.interviewMessages = (data.transcript || []).map((t) => ({
+          role: t.role === "interviewer" ? "interviewer" : "candidate",
+          text: t.text,
+        }));
+        this.interviewEnded = true;
+        this.interviewEvaluating = false;
+        this.interviewSession = {
+          session_id: data.session_id,
+          job_title: data.job_title,
+          company: data.company,
+          type: data.interview_type,
+          provider: data.provider || "",
+          mode: data.mode || "text",
+        };
+
+        // Format evaluation
+        if (data.evaluation && !data.evaluation.error) {
+          this.interviewEvaluation = this._buildEvalObj(data.evaluation);
+        } else {
+          this.interviewEvaluation = null;
+        }
+
+        this.interviewHistoryOpen = false;
+        this.interviewModal = true;
+        this.$nextTick(() => this.renderRadarChart());
+      } catch (err) {
+        this.notify(`Failed to load interview: ${err.message}`, "error");
+      }
+    },
+
+    getRecLabel(rec) {
+      return (
+        {
+          strong_hire: "STRONG HIRE",
+          hire: "HIRE",
+          lean_hire: "LEAN HIRE",
+          lean_no: "LEAN NO",
+          no_hire: "NO HIRE",
+        }[rec] ||
+        rec?.toUpperCase() ||
+        "N/A"
+      );
+    },
+
+    getRecColor(rec) {
+      return (
+        {
+          strong_hire: "#10b981",
+          hire: "#22d3ee",
+          lean_hire: "#f59e0b",
+          lean_no: "#f97316",
+          no_hire: "#f43f5e",
+        }[rec] || "#94a3b8"
+      );
+    },
+
+    getDimName(key) {
+      return (
+        {
+          communication: "Communication",
+          technical_depth: "Technical Depth",
+          problem_solving: "Problem Solving",
+          leadership: "Leadership",
+          tone_and_delivery: "Tone & Delivery",
+          engagement: "Engagement",
+        }[key] ||
+        key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+      );
+    },
+
+    _buildEvalObj(e) {
+      return {
+        has_evaluation: true,
+        overall_score: e.overall_score || 0,
+        recommendation: e.recommendation || "",
+        recommendation_label:
+          {
+            strong_hire: "Strong Hire",
+            hire: "Hire",
+            lean_hire: "Lean Hire",
+            lean_no: "Lean No",
+            no_hire: "No Hire",
+          }[e.recommendation] || e.recommendation,
+        recommendation_color:
+          {
+            strong_hire: "#10b981",
+            hire: "#22d3ee",
+            lean_hire: "#f59e0b",
+            lean_no: "#f97316",
+            no_hire: "#f43f5e",
+          }[e.recommendation] || "#94a3b8",
+        dimensions: e.dimensions || {},
+        strengths: e.strengths || [],
+        areas_for_improvement: e.areas_for_improvement || e.improvements || [],
+        improvements: e.improvements || e.areas_for_improvement || [],
+        detailed_feedback: e.detailed_feedback || "",
+        suggested_practice:
+          e.suggested_practice || e.practice_suggestions || [],
+        practice_suggestions:
+          e.practice_suggestions || e.suggested_practice || [],
+        readiness: e.readiness || "",
+        tone_analysis: e.tone_analysis || {},
+        engagement_summary: e.engagement_summary || {},
+      };
+    },
+
+    renderRadarChart() {
+      const el = document.getElementById("interviewRadarChart");
+      if (!el || !this.interviewEvaluation?.dimensions) return;
+
+      const dimOrder = [
+        "communication",
+        "technical_depth",
+        "problem_solving",
+        "leadership",
+        "tone_and_delivery",
+        "engagement",
+      ];
+      const labels = [];
+      const scores = [];
+      for (const key of dimOrder) {
+        const dim = this.interviewEvaluation.dimensions[key];
+        if (dim) {
+          labels.push(this.getDimName(key));
+          scores.push(dim.score || 0);
+        }
+      }
+      if (labels.length < 3) return;
+
+      // Destroy existing chart
+      if (this._radarChart) {
+        this._radarChart.destroy();
+        this._radarChart = null;
+      }
+
+      this._radarChart = new Chart(el, {
+        type: "radar",
+        data: {
+          labels,
+          datasets: [
+            {
+              label: "Score",
+              data: scores,
+              backgroundColor: "rgba(139, 92, 246, 0.15)",
+              borderColor: "rgba(139, 92, 246, 0.7)",
+              borderWidth: 2,
+              pointBackgroundColor: "rgba(139, 92, 246, 1)",
+              pointBorderColor: "#1e293b",
+              pointRadius: 4,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            r: {
+              min: 0,
+              max: 5,
+              ticks: {
+                stepSize: 1,
+                color: "#64748b",
+                backdropColor: "transparent",
+                font: { size: 9 },
+              },
+              grid: { color: "rgba(100,116,139,0.15)" },
+              angleLines: { color: "rgba(100,116,139,0.15)" },
+              pointLabels: {
+                color: "#94a3b8",
+                font: { size: 10, family: "'JetBrains Mono', monospace" },
+              },
+            },
+          },
+          plugins: {
+            legend: { display: false },
+          },
+        },
+      });
+    },
+
+    // ===================================================================
+    // VOICE INTERVIEW
+    // ===================================================================
+
+    async initVoiceInterview(sessionId) {
+      try {
+        // Get mic access
+        this.interviewMicStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+        this.interviewAudioContext = new (
+          window.AudioContext || window.webkitAudioContext
+        )({ sampleRate: 16000 });
+
+        // Connect audio WebSocket
+        const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+        this.interviewAudioWs = new WebSocket(
+          `${wsProto}//${location.host}/ws/interview-audio/${sessionId}`,
+        );
+        this.interviewAudioWs.onmessage = (evt) =>
+          this.handleAudioWsMessage(JSON.parse(evt.data));
+        this.interviewAudioWs.onclose = () => {
+          this.interviewVoiceStatus = "idle";
+        };
+
+        // Set up audio processing
+        const source = this.interviewAudioContext.createMediaStreamSource(
+          this.interviewMicStream,
+        );
+        const processor = this.interviewAudioContext.createScriptProcessor(
+          4096,
+          1,
+          1,
+        );
+
+        let speechActive = false;
+        let silenceStart = 0;
+        const SILENCE_THRESHOLD = 0.015;
+        const SILENCE_DURATION = 1.5;
+        const SPEECH_THRESHOLD = 0.02;
+        const SPEECH_MIN = 0.3;
+        let speechStart = 0;
+
+        processor.onaudioprocess = (e) => {
+          if (
+            !this.interviewMicActive ||
+            !this.interviewAudioWs ||
+            this.interviewAudioWs.readyState !== 1
+          )
+            return;
+
+          const input = e.inputBuffer.getChannelData(0);
+          // Calculate RMS energy
+          let sum = 0;
+          for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+          const rms = Math.sqrt(sum / input.length);
+
+          const now = Date.now() / 1000;
+
+          if (rms > SPEECH_THRESHOLD) {
+            if (!speechActive) {
+              if (speechStart === 0) {
+                speechStart = now; // Mark start of potential speech
+              }
+              if (now - speechStart > SPEECH_MIN) {
+                speechActive = true;
+                this.interviewVoiceStatus = "listening";
+              }
+            }
+            silenceStart = 0; // Reset silence counter while speaking
+          } else {
+            speechStart = 0; // Reset speech counter during silence
+            if (speechActive) {
+              if (silenceStart === 0) {
+                silenceStart = now;
+              }
+              if (now - silenceStart > SILENCE_DURATION) {
+                // End of speech detected
+                speechActive = false;
+                silenceStart = 0;
+                this.interviewVoiceStatus = "thinking";
+                if (this.interviewAudioWs.readyState === 1) {
+                  this.interviewAudioWs.send(
+                    JSON.stringify({ type: "end_of_speech" }),
+                  );
+                }
+              }
+            }
+          }
+
+          // Send audio chunk as base64
+          if (speechActive && this.interviewAudioWs.readyState === 1) {
+            const pcm16 = new Int16Array(input.length);
+            for (let i = 0; i < input.length; i++) {
+              pcm16[i] = Math.max(
+                -32768,
+                Math.min(32767, Math.round(input[i] * 32767)),
+              );
+            }
+            const bytes = new Uint8Array(pcm16.buffer);
+            let binary = "";
+            for (let i = 0; i < bytes.length; i++)
+              binary += String.fromCharCode(bytes[i]);
+            const b64 = btoa(binary);
+            this.interviewAudioWs.send(
+              JSON.stringify({ type: "audio_chunk", data: b64 }),
+            );
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(this.interviewAudioContext.destination);
+        this.interviewMicActive = true;
+        this.interviewVoiceStatus = "idle";
+      } catch (err) {
+        this.notify(`Mic access failed: ${err.message}`, "error");
+      }
+    },
+
+    handleAudioWsMessage(msg) {
+      if (msg.type === "transcript") {
+        // Candidate's transcribed speech
+        this.interviewMessages.push({ role: "candidate", text: msg.text });
+        this.$nextTick(() => this.scrollInterviewChat());
+      } else if (msg.type === "audio_response") {
+        // Interviewer's response (text + audio)
+        this.interviewMessages.push({ role: "interviewer", text: msg.text });
+        this.interviewVoiceStatus = "speaking";
+        this.$nextTick(() => this.scrollInterviewChat());
+
+        // Play audio response
+        if (msg.data) {
+          try {
+            const audioBytes = Uint8Array.from(atob(msg.data), (c) =>
+              c.charCodeAt(0),
+            );
+            const blob = new Blob([audioBytes], { type: "audio/wav" });
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.onended = () => {
+              this.interviewVoiceStatus = "idle";
+              URL.revokeObjectURL(url);
+            };
+            audio.play().catch(() => {
+              this.interviewVoiceStatus = "idle";
+            });
+          } catch {
+            this.interviewVoiceStatus = "idle";
+          }
+        } else {
+          this.interviewVoiceStatus = "idle";
+        }
+
+        if (msg.should_end) {
+          this.interviewEnded = true;
+        }
+      } else if (msg.type === "error") {
+        this.notify(`Voice error: ${msg.error}`, "error");
+        this.interviewVoiceStatus = "idle";
+      }
+    },
+
+    toggleMic() {
+      this.interviewMicActive = !this.interviewMicActive;
+      if (this.interviewMicActive) {
+        this.interviewVoiceStatus = "idle";
+      } else {
+        this.interviewVoiceStatus = "idle";
+      }
+    },
+
+    // ===================================================================
+    // GEMINI LIVE STREAMING
+    // ===================================================================
+
+    async startGeminiLiveMode(sessionId, withVideo = false) {
+      try {
+        // Get mic access
+        this.interviewMicStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+        // Use default sample rate AudioContext — we handle resampling explicitly
+        this.interviewAudioContext = new (
+          window.AudioContext || window.webkitAudioContext
+        )();
+        // Chrome suspends AudioContext until user gesture — force resume
+        if (this.interviewAudioContext.state === "suspended") {
+          await this.interviewAudioContext.resume();
+        }
+        this.geminiAudioNextTime = 0;
+
+        // Connect Gemini Live WebSocket
+        const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+        this.geminiLiveWs = new WebSocket(
+          `${wsProto}//${location.host}/ws/interview-live/${sessionId}`,
+        );
+
+        this.geminiLiveWs.onopen = () => {
+          this.geminiLiveActive = true;
+          this.interviewSending = false; // unblock UI — voice mode is ready
+          this.interviewVoiceStatus = "idle";
+          this.addFeedItem(
+            "Gemini Live connected — real-time streaming active",
+            "#8b5cf6",
+          );
+        };
+
+        this.geminiLiveWs.onmessage = (evt) => {
+          try {
+            this.handleGeminiLiveMessage(JSON.parse(evt.data));
+          } catch (_) {}
+        };
+
+        this.geminiLiveWs.onclose = () => {
+          this.geminiLiveActive = false;
+          this.interviewVoiceStatus = "idle";
+        };
+
+        this.geminiLiveWs.onerror = () => {
+          this.geminiLiveActive = false;
+          this.interviewVoiceStatus = "idle";
+          this.notify("Gemini Live connection error", "error");
+        };
+
+        // Set up audio processing (reuse existing ScriptProcessorNode pattern)
+        const source = this.interviewAudioContext.createMediaStreamSource(
+          this.interviewMicStream,
+        );
+        const processor = this.interviewAudioContext.createScriptProcessor(
+          4096,
+          1,
+          1,
+        );
+
+        let speechActive = false;
+        let silenceStart = 0;
+        const SILENCE_THRESHOLD = 0.015;
+        const SILENCE_DURATION = 1.5;
+        const SPEECH_THRESHOLD = 0.02;
+        const SPEECH_MIN = 0.3;
+        let speechStart = 0;
+
+        processor.onaudioprocess = (e) => {
+          if (
+            !this.interviewMicActive ||
+            !this.geminiLiveWs ||
+            this.geminiLiveWs.readyState !== 1
+          )
+            return;
+
+          const input = e.inputBuffer.getChannelData(0);
+          // Calculate RMS energy
+          let sum = 0;
+          for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+          const rms = Math.sqrt(sum / input.length);
+
+          const now = Date.now() / 1000;
+
+          // VAD: track speech state for UI status only (Gemini handles turn detection automatically)
+          if (rms > SPEECH_THRESHOLD) {
+            if (!speechActive) {
+              if (speechStart === 0) speechStart = now;
+              if (now - speechStart > SPEECH_MIN) {
+                speechActive = true;
+                this.interviewVoiceStatus = "listening";
+              }
+            }
+            silenceStart = 0;
+          } else {
+            speechStart = 0;
+            if (speechActive) {
+              if (silenceStart === 0) silenceStart = now;
+              if (now - silenceStart > SILENCE_DURATION) {
+                speechActive = false;
+                silenceStart = 0;
+                this.interviewVoiceStatus = "thinking";
+              }
+            }
+          }
+
+          // Downsample to 16kHz PCM16 for Gemini, then send
+          if (this.geminiLiveWs.readyState === 1) {
+            const srcRate = this.interviewAudioContext.sampleRate;
+            const dstRate = 16000;
+            const ratio = srcRate / dstRate;
+            const outLen = Math.floor(input.length / ratio);
+            const pcm16 = new Int16Array(outLen);
+            for (let i = 0; i < outLen; i++) {
+              const srcIdx = Math.floor(i * ratio);
+              pcm16[i] = Math.max(
+                -32768,
+                Math.min(32767, Math.round(input[srcIdx] * 32767)),
+              );
+            }
+            const bytes = new Uint8Array(pcm16.buffer);
+            let binary = "";
+            for (let i = 0; i < bytes.length; i++)
+              binary += String.fromCharCode(bytes[i]);
+            const b64 = btoa(binary);
+            this.geminiLiveWs.send(
+              JSON.stringify({ type: "audio_chunk", data: b64 }),
+            );
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(this.interviewAudioContext.destination);
+        this.interviewMicActive = true;
+        this.interviewVoiceStatus = "idle";
+
+        // If video mode, start webcam and periodic frame streaming
+        if (withVideo) {
+          await this.startGeminiVideoCapture(sessionId);
+        }
+      } catch (err) {
+        this.notify(`Gemini Live init failed: ${err.message}`, "error");
+        this.geminiLiveActive = false;
+      }
+    },
+
+    async startGeminiVideoCapture(sessionId) {
+      try {
+        this.interviewVideoStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+        this.interviewWebcamActive = true;
+
+        // Show preview
+        this.$nextTick(() => {
+          const video = document.getElementById("webcam-preview");
+          if (video) {
+            video.srcObject = this.interviewVideoStream;
+            video.play().catch(() => {});
+          }
+        });
+
+        // Start MediaRecorder for session recording
+        try {
+          const combinedStream = new MediaStream([
+            ...this.interviewVideoStream.getVideoTracks(),
+            ...(this.interviewMicStream
+              ? this.interviewMicStream.getAudioTracks()
+              : []),
+          ]);
+          this.interviewMediaRecorder = new MediaRecorder(combinedStream, {
+            mimeType: "video/webm;codecs=vp9,opus",
+          });
+          this.interviewRecordedChunks = [];
+          this.interviewMediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) this.interviewRecordedChunks.push(e.data);
+          };
+          this.interviewMediaRecorder.start(1000);
+        } catch {
+          // Recording not supported — continue without it
+        }
+
+        // Periodic frame capture: send JPEG frames over Gemini Live WS (every 15s)
+        this.interviewFrameTimer = setInterval(() => {
+          if (
+            this.interviewWebcamActive &&
+            this.geminiLiveWs &&
+            this.geminiLiveWs.readyState === 1 &&
+            !this.interviewEnded
+          ) {
+            this.captureAndSendGeminiFrame();
+          }
+        }, 15000);
+      } catch (err) {
+        this.notify(`Camera access failed: ${err.message}`, "error");
+      }
+    },
+
+    async captureAndSendGeminiFrame() {
+      try {
+        const video = document.getElementById("webcam-preview");
+        if (!video || video.readyState < 2) return;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = 320;
+        canvas.height = 240;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, 320, 240);
+
+        const blob = await new Promise((resolve) =>
+          canvas.toBlob(resolve, "image/jpeg", 0.7),
+        );
+        const reader = new FileReader();
+        reader.onload = () => {
+          const b64 = reader.result.split(",")[1];
+          if (this.geminiLiveWs && this.geminiLiveWs.readyState === 1) {
+            this.geminiLiveWs.send(
+              JSON.stringify({ type: "video_frame", data: b64 }),
+            );
+          }
+        };
+        reader.readAsDataURL(blob);
+      } catch {
+        /* best effort */
+      }
+    },
+
+    handleGeminiLiveMessage(msg) {
+      if (msg.type === "transcript") {
+        // Filter out Gemini's internal thinking (bold headers like "**Planning**\nI've begun...")
+        let text = (msg.text || "").trim();
+        if (/^\*\*[^*]+\*\*/.test(text)) return;
+
+        const role = msg.role === "interviewer" ? "interviewer" : "candidate";
+        if (text) {
+          this.interviewMessages.push({ role, text });
+          this.$nextTick(() => this.scrollInterviewChat());
+        }
+
+        if (msg.should_end) {
+          this.interviewEnded = true;
+        }
+      } else if (msg.type === "audio_response") {
+        // AI audio — queue chunks sequentially so they play as continuous speech
+        this.interviewVoiceStatus = "speaking";
+
+        if (msg.text) {
+          this.interviewMessages.push({ role: "interviewer", text: msg.text });
+          this.$nextTick(() => this.scrollInterviewChat());
+        }
+
+        if (msg.data && this.interviewAudioContext) {
+          try {
+            // Ensure AudioContext is running (Chrome suspends it)
+            if (this.interviewAudioContext.state === "suspended") {
+              this.interviewAudioContext.resume();
+            }
+
+            const raw = atob(msg.data);
+            const bytes = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+
+            const pcm16 = new Int16Array(bytes.buffer);
+            const float32 = new Float32Array(pcm16.length);
+            for (let i = 0; i < pcm16.length; i++)
+              float32[i] = pcm16[i] / 32768;
+
+            const audioBuffer = this.interviewAudioContext.createBuffer(
+              1,
+              float32.length,
+              24000,
+            );
+            audioBuffer.getChannelData(0).set(float32);
+
+            const bufferSource =
+              this.interviewAudioContext.createBufferSource();
+            bufferSource.buffer = audioBuffer;
+            bufferSource.connect(this.interviewAudioContext.destination);
+
+            // Schedule this chunk right after the previous one ends
+            const now = this.interviewAudioContext.currentTime;
+            // Reset queue if it's stale (gap > 0.5s means new turn)
+            if (
+              this.geminiAudioNextTime > 0 &&
+              now - this.geminiAudioNextTime > 0.5
+            ) {
+              this.geminiAudioNextTime = 0;
+            }
+            const startAt = Math.max(now, this.geminiAudioNextTime);
+            bufferSource.start(startAt);
+            this.geminiAudioNextTime = startAt + audioBuffer.duration;
+          } catch {
+            this.interviewVoiceStatus = "idle";
+          }
+        }
+
+        if (msg.should_end) {
+          this.interviewEnded = true;
+        }
+      } else if (msg.type === "turn_complete") {
+        // Gemini finished its turn — switch back to listening after audio drains
+        const delay = Math.max(
+          0,
+          (this.geminiAudioNextTime || 0) -
+            (this.interviewAudioContext
+              ? this.interviewAudioContext.currentTime
+              : 0),
+        );
+        setTimeout(() => {
+          this.interviewVoiceStatus = "idle";
+        }, delay * 1000);
+        this.geminiAudioNextTime = 0;
+      } else if (msg.type === "error") {
+        this.notify(
+          `Gemini Live error: ${msg.error || msg.message || "Unknown error"}`,
+          "error",
+        );
+        this.interviewVoiceStatus = "idle";
+      }
+    },
+
+    stopGeminiLiveMode() {
+      // Close Gemini Live WebSocket
+      if (this.geminiLiveWs) {
+        if (
+          this.geminiLiveWs.readyState === WebSocket.OPEN ||
+          this.geminiLiveWs.readyState === WebSocket.CONNECTING
+        ) {
+          this.geminiLiveWs.close();
+        }
+        this.geminiLiveWs = null;
+      }
+      this.geminiLiveActive = false;
+
+      // Stop mic stream
+      if (this.interviewMicStream) {
+        this.interviewMicStream.getTracks().forEach((t) => t.stop());
+        this.interviewMicStream = null;
+      }
+
+      // Stop webcam stream
+      if (this.interviewVideoStream) {
+        this.interviewVideoStream.getTracks().forEach((t) => t.stop());
+        this.interviewVideoStream = null;
+      }
+
+      // Stop media recorder
+      if (
+        this.interviewMediaRecorder &&
+        this.interviewMediaRecorder.state !== "inactive"
+      ) {
+        this.interviewMediaRecorder.stop();
+      }
+
+      // Stop frame capture timer
+      if (this.interviewFrameTimer) {
+        clearInterval(this.interviewFrameTimer);
+        this.interviewFrameTimer = null;
+      }
+
+      // Close audio context
+      if (this.interviewAudioContext) {
+        this.interviewAudioContext.close().catch(() => {});
+        this.interviewAudioContext = null;
+      }
+
+      this.interviewMicActive = false;
+      this.interviewWebcamActive = false;
+      this.interviewVoiceStatus = "idle";
+    },
+
+    // ===================================================================
+    // OpenAI Realtime — Live Audio Phone Call Interviews
+    // ===================================================================
+
+    async startOpenAILiveMode(sessionId) {
+      try {
+        // Get mic access (audio only — no video for OpenAI)
+        this.interviewMicStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+        // OpenAI Realtime uses 24kHz PCM16
+        this.interviewAudioContext = new (
+          window.AudioContext || window.webkitAudioContext
+        )({ sampleRate: 24000 });
+
+        // Connect to OpenAI Realtime WebSocket endpoint
+        const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+        this.openaiLiveWs = new WebSocket(
+          `${wsProto}//${location.host}/ws/interview-openai-live/${sessionId}`,
+        );
+
+        this.openaiLiveWs.onopen = () => {
+          this.openaiLiveActive = true;
+          this.interviewVoiceStatus = "idle";
+          this.addFeedItem(
+            "OpenAI Realtime connected — live audio active",
+            "#3b82f6",
+          );
+        };
+
+        this.openaiLiveWs.onmessage = (evt) => {
+          try {
+            this.handleOpenAILiveMessage(JSON.parse(evt.data));
+          } catch (_) {}
+        };
+
+        this.openaiLiveWs.onclose = () => {
+          this.openaiLiveActive = false;
+          this.interviewVoiceStatus = "idle";
+        };
+
+        this.openaiLiveWs.onerror = () => {
+          this.openaiLiveActive = false;
+          this.interviewVoiceStatus = "idle";
+          this.notify("OpenAI Realtime connection error", "error");
+        };
+
+        // Set up audio processing — stream all audio (OpenAI has server-side VAD)
+        const source = this.interviewAudioContext.createMediaStreamSource(
+          this.interviewMicStream,
+        );
+        const processor = this.interviewAudioContext.createScriptProcessor(
+          4096,
+          1,
+          1,
+        );
+
+        processor.onaudioprocess = (e) => {
+          if (
+            !this.interviewMicActive ||
+            !this.openaiLiveWs ||
+            this.openaiLiveWs.readyState !== 1
+          )
+            return;
+
+          const input = e.inputBuffer.getChannelData(0);
+
+          // Convert Float32 to PCM16 and send as base64
+          const pcm16 = new Int16Array(input.length);
+          for (let i = 0; i < input.length; i++) {
+            pcm16[i] = Math.max(
+              -32768,
+              Math.min(32767, Math.round(input[i] * 32767)),
+            );
+          }
+          const bytes = new Uint8Array(pcm16.buffer);
+          let binary = "";
+          for (let i = 0; i < bytes.length; i++)
+            binary += String.fromCharCode(bytes[i]);
+          const b64 = btoa(binary);
+          this.openaiLiveWs.send(
+            JSON.stringify({ type: "audio_chunk", data: b64 }),
+          );
+        };
+
+        source.connect(processor);
+        processor.connect(this.interviewAudioContext.destination);
+        this.interviewMicActive = true;
+        this.interviewVoiceStatus = "idle";
+      } catch (err) {
+        this.notify(`OpenAI Realtime init failed: ${err.message}`, "error");
+        this.openaiLiveActive = false;
+      }
+    },
+
+    handleOpenAILiveMessage(msg) {
+      if (msg.type === "transcript") {
+        const role = msg.role === "interviewer" ? "interviewer" : "candidate";
+        this.interviewMessages.push({ role, text: msg.text });
+        this.$nextTick(() => this.scrollInterviewChat());
+
+        if (msg.should_end) {
+          this.interviewEnded = true;
+        }
+      } else if (msg.type === "audio_response") {
+        this.interviewVoiceStatus = "speaking";
+
+        if (msg.text) {
+          this.interviewMessages.push({ role: "interviewer", text: msg.text });
+          this.$nextTick(() => this.scrollInterviewChat());
+        }
+
+        if (msg.data && this.interviewAudioContext) {
+          try {
+            const raw = atob(msg.data);
+            const bytes = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+
+            // Decode PCM16 to Float32 for AudioContext playback at 24kHz
+            const pcm16 = new Int16Array(bytes.buffer);
+            const float32 = new Float32Array(pcm16.length);
+            for (let i = 0; i < pcm16.length; i++)
+              float32[i] = pcm16[i] / 32768;
+
+            const audioBuffer = this.interviewAudioContext.createBuffer(
+              1,
+              float32.length,
+              24000,
+            );
+            audioBuffer.getChannelData(0).set(float32);
+
+            const bufferSource =
+              this.interviewAudioContext.createBufferSource();
+            bufferSource.buffer = audioBuffer;
+            bufferSource.connect(this.interviewAudioContext.destination);
+            bufferSource.onended = () => {
+              this.interviewVoiceStatus = "idle";
+            };
+            bufferSource.start();
+          } catch {
+            this.interviewVoiceStatus = "idle";
+          }
+        } else {
+          this.interviewVoiceStatus = "idle";
+        }
+
+        if (msg.should_end) {
+          this.interviewEnded = true;
+        }
+      } else if (msg.type === "turn_complete") {
+        this.interviewVoiceStatus = "idle";
+      } else if (msg.type === "speech_started") {
+        // OpenAI detected user started speaking
+        this.interviewVoiceStatus = "listening";
+      } else if (msg.type === "speech_stopped") {
+        // OpenAI detected user stopped speaking
+        this.interviewVoiceStatus = "thinking";
+      } else if (msg.type === "error") {
+        this.notify(
+          `OpenAI Realtime error: ${msg.error || msg.message || "Unknown error"}`,
+          "error",
+        );
+        this.interviewVoiceStatus = "idle";
+      }
+    },
+
+    stopOpenAILiveMode() {
+      if (this.openaiLiveWs) {
+        if (
+          this.openaiLiveWs.readyState === WebSocket.OPEN ||
+          this.openaiLiveWs.readyState === WebSocket.CONNECTING
+        ) {
+          this.openaiLiveWs.close();
+        }
+        this.openaiLiveWs = null;
+      }
+      this.openaiLiveActive = false;
+
+      // Stop mic stream
+      if (this.interviewMicStream) {
+        this.interviewMicStream.getTracks().forEach((t) => t.stop());
+        this.interviewMicStream = null;
+      }
+
+      // Close audio context
+      if (this.interviewAudioContext) {
+        this.interviewAudioContext.close().catch(() => {});
+        this.interviewAudioContext = null;
+      }
+
+      this.interviewMicActive = false;
+      this.interviewVoiceStatus = "idle";
+    },
+
+    /**
+     * Returns true if current interview config will use live streaming
+     * (Gemini Live for voice/video, or OpenAI Realtime for voice).
+     */
+    isLiveMode() {
+      const p = this.interviewConfig.provider;
+      const m = this.interviewConfig.mode;
+      return (
+        (p === "gemini" && (m === "voice" || m === "video")) ||
+        (p === "openai" && m === "voice")
+      );
+    },
+
+    /** @deprecated Use isLiveMode() instead */
+    isGeminiLiveMode() {
+      return (
+        this.interviewConfig.provider === "gemini" &&
+        (this.interviewConfig.mode === "voice" ||
+          this.interviewConfig.mode === "video")
+      );
+    },
+
+    // ===================================================================
+    // VIDEO INTERVIEW
+    // ===================================================================
+
+    async initVideoInterview(sessionId) {
+      try {
+        this.interviewVideoStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+        this.interviewWebcamActive = true;
+
+        // Show preview
+        this.$nextTick(() => {
+          const video = document.getElementById("webcam-preview");
+          if (video) {
+            video.srcObject = this.interviewVideoStream;
+            video.play().catch(() => {});
+          }
+        });
+
+        // Start MediaRecorder for session recording
+        try {
+          const combinedStream = new MediaStream([
+            ...this.interviewVideoStream.getVideoTracks(),
+            ...(this.interviewMicStream
+              ? this.interviewMicStream.getAudioTracks()
+              : []),
+          ]);
+          this.interviewMediaRecorder = new MediaRecorder(combinedStream, {
+            mimeType: "video/webm;codecs=vp9,opus",
+          });
+          this.interviewRecordedChunks = [];
+          this.interviewMediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) this.interviewRecordedChunks.push(e.data);
+          };
+          this.interviewMediaRecorder.start(1000); // 1s chunks
+        } catch {
+          // Recording not supported — continue without it
+        }
+
+        // Periodic frame capture for engagement analysis (every 15s)
+        this.interviewFrameTimer = setInterval(() => {
+          if (
+            this.interviewWebcamActive &&
+            this.interviewSession &&
+            !this.interviewEnded
+          ) {
+            this.captureAndAnalyzeFrame(sessionId);
+          }
+        }, 15000);
+      } catch (err) {
+        this.notify(`Camera access failed: ${err.message}`, "error");
+      }
+    },
+
+    async captureAndAnalyzeFrame(sessionId) {
+      try {
+        const video = document.getElementById("webcam-preview");
+        if (!video || video.readyState < 2) return;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = 320;
+        canvas.height = 240;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, 320, 240);
+
+        const blob = await new Promise((resolve) =>
+          canvas.toBlob(resolve, "image/jpeg", 0.7),
+        );
+        const reader = new FileReader();
+        reader.onload = async () => {
+          const b64 = reader.result.split(",")[1];
+          try {
+            const res = await fetch("/api/interview/analyze-frame", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ session_id: sessionId, frame: b64 }),
+            });
+            if (res.ok) {
+              const data = await res.json();
+              if (data.score) {
+                this.addFeedItem(
+                  `Engagement: ${data.score}/5 — ${data.notes || ""}`,
+                  "#a78bfa",
+                );
+              }
+            }
+          } catch {
+            /* best effort */
+          }
+        };
+        reader.readAsDataURL(blob);
+      } catch {
+        /* best effort */
+      }
+    },
+
+    async uploadRecording(sessionId) {
+      if (!this.interviewRecordedChunks.length) return;
+      try {
+        const blob = new Blob(this.interviewRecordedChunks, {
+          type: "video/webm",
+        });
+        const fd = new FormData();
+        fd.append("recording", blob, `${sessionId}.webm`);
+        await fetch(`/api/interview/${sessionId}/recording`, {
+          method: "POST",
+          body: fd,
+        });
+      } catch {
+        /* best effort */
+      }
+    },
+
+    // ===================================================================
+    // CHARTS
+    // ===================================================================
 
     async _buildTimelineChart() {
       const canvas = document.getElementById("timelineChart");

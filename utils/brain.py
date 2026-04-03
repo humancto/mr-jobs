@@ -31,7 +31,18 @@ class ClaudeBrain:
         self._verify_cli()
 
     def _verify_cli(self):
-        """Check that claude CLI is installed and accessible."""
+        """Check that claude CLI is installed and accessible (skipped if not needed)."""
+        # Skip CLI check if profile uses a non-CLI backend for all components
+        if self.profile:
+            ai_config = self.profile.get("ai", {})
+            default = ai_config.get("default_backend", "claude_cli")
+            components = ai_config.get("components", {})
+            all_backends = set(components.values()) | {default}
+            if "claude_cli" not in all_backends:
+                if self.verbose:
+                    print(f"  🧠 Using non-CLI backends: {', '.join(all_backends)}")
+                return
+
         try:
             result = subprocess.run(
                 ["claude", "--version"],
@@ -93,6 +104,69 @@ class ClaudeBrain:
         except json.JSONDecodeError:
             # Fallback: return raw stdout
             return result.stdout.strip()
+
+    def ask_chat(self, messages: list, system: str = "", timeout: int = 120, component: str = "interview") -> str:
+        """
+        Send a multi-turn conversation to the configured LLM backend.
+
+        Args:
+            messages: List of {"role": "user"|"assistant", "content": str}
+            system: System prompt
+            timeout: Request timeout
+            component: Which AI component config to use
+
+        Returns:
+            Assistant response text
+        """
+        if self.verbose:
+            msg_count = len(messages)
+            preview = messages[-1]["content"][:60] if messages else ""
+            print(f"  AI chat ({msg_count} msgs): {preview}...")
+
+        # Route through pluggable backend if profile is available
+        if self.profile:
+            from utils.llm import get_backend
+            backend = get_backend(component, self.profile)
+            return backend.ask_chat(messages, system=system, timeout=timeout)
+
+        # Fallback: flatten to single prompt for Claude CLI
+        parts = []
+        if system:
+            parts.append(system)
+        for msg in messages:
+            role_label = "Interviewer" if msg["role"] == "assistant" else "Candidate"
+            parts.append(f"{role_label}: {msg['content']}")
+        parts.append("Interviewer:")
+        return self.ask("\n\n".join(parts), timeout=timeout)
+
+    def ask_vision(self, prompt: str, image_bytes: bytes, mime_type: str = "image/jpeg",
+                   timeout: int = 30, component: str = "interview") -> str:
+        """
+        Send a prompt + image to a vision-capable LLM backend.
+        Routes to the configured backend's ask_vision() method.
+        """
+        if self.verbose:
+            preview = prompt[:60].replace('\n', ' ')
+            print(f"  AI vision ({len(image_bytes)} bytes): {preview}...")
+
+        if self.profile:
+            from utils.llm import get_backend
+            backend = get_backend(component, self.profile)
+            return backend.ask_vision(prompt, image_bytes, mime_type, timeout=timeout)
+
+        # Fallback: text-only analysis (Claude CLI doesn't support inline images)
+        return self.ask(prompt, timeout=timeout, component=component)
+
+    def ask_vision_json(self, prompt: str, image_bytes: bytes, mime_type: str = "image/jpeg",
+                        timeout: int = 30, component: str = "interview") -> dict:
+        """Send a prompt + image and parse JSON from the vision response."""
+        if self.profile:
+            from utils.llm import get_backend
+            backend = get_backend(component, self.profile)
+            return backend.ask_vision_json(prompt, image_bytes, mime_type, timeout=timeout)
+
+        # Fallback: text-only
+        return self.ask_json(prompt, timeout=timeout, component=component)
 
     def ask_json(self, prompt: str, timeout: int = 120, component: str = "general") -> dict:
         """Ask the LLM and parse JSON from the response."""

@@ -777,20 +777,29 @@ async def test_smart_router_greenhouse_platform_override():
     mock_page = AsyncMock()
     mock_gh_mod = _mock_greenhouse_module()
 
+    # Patch URL resolver to skip resolution (we're testing adapter routing, not URL resolution)
+    mock_resolve = AsyncMock(return_value={
+        "resolved_url": "https://example.com/apply",
+        "resolution": "unresolved",
+        "original_url": "https://example.com/apply",
+        "apply_email": None,
+        "company_careers": None,
+    })
     with patch.dict("sys.modules", {"adapters.greenhouse": mock_gh_mod}):
-        mock_gh_mod.apply_greenhouse.return_value = True
+        with patch("utils.url_resolver.resolve_apply_url", mock_resolve):
+            mock_gh_mod.apply_greenhouse.return_value = True
 
-        result = await apply_smart(
-            mock_page,
-            "https://example.com/apply",
-            MOCK_PROFILE,
-            MOCK_BRAIN,
-            platform="greenhouse",
-            dry_run=True,
-        )
+            result = await apply_smart(
+                mock_page,
+                "https://example.com/apply",
+                MOCK_PROFILE,
+                MOCK_BRAIN,
+                platform="greenhouse",
+                dry_run=True,
+            )
 
-        assert result is True
-        mock_gh_mod.apply_greenhouse.assert_called_once()
+            assert result is True
+            mock_gh_mod.apply_greenhouse.assert_called_once()
 
 
 @pytest.mark.asyncio

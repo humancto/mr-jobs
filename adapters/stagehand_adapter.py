@@ -1659,11 +1659,15 @@ async def apply_smart(
     cover_letter: str = "",
     dry_run: bool = True,
     platform: str = "",
+    company: str = "",
+    title: str = "",
+    description: str = "",
 ) -> bool:
     """
     Intelligent adapter router with cascading fallbacks.
 
     Selection order:
+    0. URL Resolution: resolve aggregator URLs to real ATS forms
     1. Greenhouse adapter for greenhouse.io URLs (purpose-built, most reliable)
     2. CLI-powered adapter for everything else (AI self-healing via Claude CLI)
     3. Generic adapter as final fallback (CSS + raw HTML approach)
@@ -1676,10 +1680,51 @@ async def apply_smart(
         cover_letter: Pre-generated cover letter text
         dry_run: If True, fill form but don't click submit
         platform: Override platform detection ("greenhouse", etc.)
+        company: Company name (helps URL resolution via ATS lookup)
+        title: Job title (context for URL resolution)
+        description: Job description text (for HN URL extraction)
 
     Returns:
         True on success/dry-run, False on failure
     """
+    # ─── Phase 0: URL Resolution ────────────────────────────────────────
+    from utils.url_resolver import resolve_apply_url, is_ats_url, is_aggregator_url
+
+    if not is_ats_url(job_url):
+        print(f"  [*] URL resolver: {job_url[:60]}...")
+        resolution = await resolve_apply_url(
+            page,
+            job_url=job_url,
+            company=company,
+            title=title,
+            description=description,
+            platform=platform,
+        )
+        resolved = resolution["resolved_url"]
+        method = resolution["resolution"]
+
+        if resolved != job_url:
+            print(f"  [+] Resolved ({method}): {resolved[:80]}")
+            job_url = resolved
+
+            # Update platform hint based on resolved URL
+            url_lower_r = resolved.lower()
+            if "greenhouse.io" in url_lower_r:
+                platform = "greenhouse"
+            elif "lever.co" in url_lower_r:
+                platform = "lever"
+            elif "ashbyhq.com" in url_lower_r:
+                platform = "ashby"
+        elif resolution.get("apply_email"):
+            print(f"  [!] This job requires email application: {resolution['apply_email']}")
+            print(f"      Cannot auto-fill — manual application needed.")
+            return False
+        elif method == "unresolved" and is_aggregator_url(job_url):
+            print(f"  [!] Could not resolve aggregator URL to ATS form")
+            if resolution.get("company_careers"):
+                print(f"      Company careers page: {resolution['company_careers']}")
+            return False
+
     url_lower = job_url.lower()
 
     # Greenhouse: use purpose-built adapter (most reliable for this ATS)

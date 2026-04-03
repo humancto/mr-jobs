@@ -113,23 +113,25 @@ def log_discovered(job) -> None:
         return
 
     conn = get_db()
-    metadata = json.dumps(job.metadata) if isinstance(job.metadata, dict) else job.metadata
-    conn.execute("""
-        INSERT OR IGNORE INTO applications
-        (id, title, company, platform, url, apply_url, location, description, source,
-         salary_min, salary_max, date_posted, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        job.id, job.title, job.company, job.platform, job.url, job.apply_url,
-        job.location, getattr(job, 'description', ''),
-        job.metadata.get('source', job.platform) if isinstance(job.metadata, dict) else job.platform,
-        job.metadata.get('salary_min') if isinstance(job.metadata, dict) else None,
-        job.metadata.get('salary_max') if isinstance(job.metadata, dict) else None,
-        job.metadata.get('date_posted', '') if isinstance(job.metadata, dict) else '',
-        metadata
-    ))
-    conn.commit()
-    conn.close()
+    try:
+        metadata = json.dumps(job.metadata) if isinstance(job.metadata, dict) else job.metadata
+        conn.execute("""
+            INSERT OR IGNORE INTO applications
+            (id, title, company, platform, url, apply_url, location, description, source,
+             salary_min, salary_max, date_posted, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            job.id, job.title, job.company, job.platform, job.url, job.apply_url,
+            job.location, getattr(job, 'description', ''),
+            job.metadata.get('source', job.platform) if isinstance(job.metadata, dict) else job.platform,
+            job.metadata.get('salary_min') if isinstance(job.metadata, dict) else None,
+            job.metadata.get('salary_max') if isinstance(job.metadata, dict) else None,
+            job.metadata.get('date_posted', '') if isinstance(job.metadata, dict) else '',
+            metadata
+        ))
+        conn.commit()
+    finally:
+        conn.close()
     _emit("job_discovered", {"id": job.id, "title": job.title, "company": job.company})
 
 
@@ -197,7 +199,7 @@ def get_stats() -> dict:
     """Get overall application stats."""
     conn = get_db()
     stats = {}
-    for status in ["discovered", "matched", "applied", "skipped", "failed"]:
+    for status in VALID_STATUSES:
         row = conn.execute(
             "SELECT COUNT(*) as cnt FROM applications WHERE status = ?", (status,)
         ).fetchone()
@@ -284,43 +286,45 @@ def get_all_jobs(
 ) -> tuple:
     """Get jobs with filtering, sorting, and pagination. Returns (jobs, total_count)."""
     conn = get_db()
-    conditions = []
-    params = []
+    try:
+        conditions = []
+        params = []
 
-    if status:
-        conditions.append("status = ?")
-        params.append(status)
-    if company:
-        conditions.append("company LIKE ?")
-        params.append(f"%{company}%")
-    if min_score is not None:
-        conditions.append("match_score >= ?")
-        params.append(min_score)
-    if search:
-        conditions.append("(title LIKE ? OR company LIKE ? OR location LIKE ?)")
-        params.extend([f"%{search}%"] * 3)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        if company:
+            conditions.append("company LIKE ?")
+            params.append(f"%{company}%")
+        if min_score is not None:
+            conditions.append("match_score >= ?")
+            params.append(min_score)
+        if search:
+            conditions.append("(title LIKE ? OR company LIKE ? OR location LIKE ?)")
+            params.extend([f"%{search}%"] * 3)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-    # Validate sort column
-    valid_sorts = ["discovered_at", "match_score", "company", "title", "status", "applied_at"]
-    if sort_by not in valid_sorts:
-        sort_by = "discovered_at"
-    if sort_order not in ("asc", "desc"):
-        sort_order = "desc"
+        # Validate sort column
+        valid_sorts = ["discovered_at", "match_score", "company", "title", "status", "applied_at"]
+        if sort_by not in valid_sorts:
+            sort_by = "discovered_at"
+        if sort_order not in ("asc", "desc"):
+            sort_order = "desc"
 
-    # Get total count
-    count_row = conn.execute(
-        f"SELECT COUNT(*) as cnt FROM applications {where}", params
-    ).fetchone()
-    total = count_row["cnt"]
+        # Get total count
+        count_row = conn.execute(
+            f"SELECT COUNT(*) as cnt FROM applications {where}", params
+        ).fetchone()
+        total = count_row["cnt"]
 
-    # Get paginated results
-    rows = conn.execute(
-        f"SELECT * FROM applications {where} ORDER BY {sort_by} {sort_order} LIMIT ? OFFSET ?",
-        params + [limit, offset]
-    ).fetchall()
-    conn.close()
+        # Get paginated results
+        rows = conn.execute(
+            f"SELECT * FROM applications {where} ORDER BY {sort_by} {sort_order} LIMIT ? OFFSET ?",
+            params + [limit, offset]
+        ).fetchall()
+    finally:
+        conn.close()
 
     return [dict(row) for row in rows], total
 
@@ -338,9 +342,11 @@ def update_job_status(job_id: str, status: str) -> bool:
     if status not in VALID_STATUSES:
         return False
     conn = get_db()
-    conn.execute("UPDATE applications SET status = ? WHERE id = ?", (status, job_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("UPDATE applications SET status = ? WHERE id = ?", (status, job_id))
+        conn.commit()
+    finally:
+        conn.close()
     _emit("job_status_changed", {"id": job_id, "status": status})
     return True
 
@@ -349,6 +355,15 @@ def update_job_notes(job_id: str, notes: str) -> bool:
     """Update notes for a job."""
     conn = get_db()
     conn.execute("UPDATE applications SET notes = ? WHERE id = ?", (notes, job_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def update_apply_url(job_id: str, apply_url: str) -> bool:
+    """Update a job's apply_url (after URL resolution)."""
+    conn = get_db()
+    conn.execute("UPDATE applications SET apply_url = ? WHERE id = ?", (apply_url, job_id))
     conn.commit()
     conn.close()
     return True
@@ -595,3 +610,144 @@ def get_ignored_count() -> int:
     row = conn.execute("SELECT COUNT(*) FROM ignored_hashes").fetchone()
     conn.close()
     return row[0]
+
+
+# ---------------------------------------------------------------------------
+# Interview sessions — mock interview tracking
+# ---------------------------------------------------------------------------
+
+
+def _ensure_interview_table(conn: sqlite3.Connection):
+    """Create interview_sessions table if it doesn't exist."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS interview_sessions (
+            session_id TEXT PRIMARY KEY,
+            job_id TEXT DEFAULT '',
+            job_title TEXT DEFAULT '',
+            company TEXT DEFAULT '',
+            interview_type TEXT DEFAULT 'mixed',
+            difficulty TEXT DEFAULT 'mid',
+            duration_minutes REAL DEFAULT 0,
+            questions_asked INTEGER DEFAULT 0,
+            state TEXT DEFAULT 'ended',
+            started_at TEXT,
+            ended_at TEXT,
+            transcript TEXT DEFAULT '[]',
+            evaluation TEXT DEFAULT '{}',
+            video_enabled INTEGER DEFAULT 0,
+            engagement_scores TEXT DEFAULT '[]',
+            recording_path TEXT DEFAULT '',
+            provider TEXT DEFAULT '',
+            mode TEXT DEFAULT 'text',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_interview_job
+        ON interview_sessions(job_id)
+    """)
+    # Migrate: add columns if missing (for existing DBs)
+    for col, default in [("recording_path", "''"), ("provider", "''"), ("mode", "'text'")]:
+        try:
+            conn.execute(f"ALTER TABLE interview_sessions ADD COLUMN {col} TEXT DEFAULT {default}")
+        except Exception:
+            pass  # Column already exists
+
+
+def save_interview_session(session_data: dict) -> bool:
+    """Save an interview session to the database."""
+    conn = get_db()
+    try:
+        _ensure_interview_table(conn)
+
+        conn.execute("""
+            INSERT OR REPLACE INTO interview_sessions
+            (session_id, job_id, job_title, company, interview_type, difficulty,
+             duration_minutes, questions_asked, state, started_at, ended_at,
+             transcript, evaluation, video_enabled, engagement_scores,
+             recording_path, provider, mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            session_data.get("session_id", ""),
+            session_data.get("job_id", ""),
+            session_data.get("job_title", ""),
+            session_data.get("company", ""),
+            session_data.get("interview_type", "mixed"),
+            session_data.get("difficulty", "mid"),
+            session_data.get("duration_minutes", 0),
+            session_data.get("questions_asked", 0),
+            session_data.get("state", "ended"),
+            session_data.get("started_at"),
+            session_data.get("ended_at"),
+            json.dumps(session_data.get("transcript", [])),
+            json.dumps(session_data.get("evaluation", {})),
+            1 if session_data.get("video_enabled") else 0,
+            json.dumps(session_data.get("engagement_scores", [])),
+            session_data.get("recording_path", ""),
+            session_data.get("provider", ""),
+            session_data.get("mode", "text"),
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+    _emit("interview_completed", {
+        "session_id": session_data.get("session_id"),
+        "job_title": session_data.get("job_title"),
+        "company": session_data.get("company"),
+    })
+    return True
+
+
+def get_interview_sessions(job_id: str = None) -> list:
+    """Get interview sessions, optionally filtered by job_id."""
+    conn = get_db()
+    try:
+        _ensure_interview_table(conn)
+
+        if job_id:
+            rows = conn.execute(
+                "SELECT * FROM interview_sessions WHERE job_id = ? ORDER BY created_at DESC",
+                (job_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM interview_sessions ORDER BY created_at DESC"
+            ).fetchall()
+    finally:
+        conn.close()
+
+    sessions = []
+    for row in rows:
+        d = dict(row)
+        # Parse JSON fields
+        for field in ("transcript", "evaluation", "engagement_scores"):
+            if isinstance(d.get(field), str):
+                try:
+                    d[field] = json.loads(d[field])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        sessions.append(d)
+    return sessions
+
+
+def get_interview_session(session_id: str) -> dict:
+    """Get a single interview session by ID."""
+    conn = get_db()
+    _ensure_interview_table(conn)
+
+    row = conn.execute(
+        "SELECT * FROM interview_sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    d = dict(row)
+    for field in ("transcript", "evaluation", "engagement_scores"):
+        if isinstance(d.get(field), str):
+            try:
+                d[field] = json.loads(d[field])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return d

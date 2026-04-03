@@ -101,6 +101,10 @@ ai:
   backends:
     claude_cli:
       timeout: 120
+    gemini:
+      api_key: ${GEMINI_API_KEY}
+      model: gemini-2.5-flash
+      timeout: 60
     # openai:
     #   api_key: ${OPENAI_API_KEY}
     #   model: gpt-4o
@@ -116,3 +120,4 @@ ai:
     form_analysis: claude_cli
     email_classification: claude_cli
     profile_analysis: claude_cli
+    interview: gemini
